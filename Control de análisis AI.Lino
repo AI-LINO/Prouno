@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from hmmlearn import hmm
 import requests
 from datetime import datetime, timedelta
-import time
+import time 2
 
 st.set_page_config(page_title="AI.Lino Quantum Engine", layout="wide")
 
