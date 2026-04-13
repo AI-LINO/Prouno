@@ -4,69 +4,71 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.colors import LinearSegmentedColormap
 from hmmlearn import hmm
 import requests
 from datetime import datetime, timedelta
+from scipy import signal as scipy_signal
+from scipy.linalg import solve
 import time
 import warnings
 warnings.filterwarnings("ignore")
 
-st.set_page_config(page_title="AI.Lino Quantum Engine", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AI.Lino Quantum Engine", layout="wide")
 
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap');
-    
+    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Rajdhani', sans-serif; }
-    .main { background-color: #080c14; }
-    .stSidebar { background-color: #0d1117; border-right: 1px solid #1a2535; }
-    
-    .signal-box {
-        border-radius: 8px; padding: 16px 20px; margin: 8px 0;
-        font-family: 'Share Tech Mono', monospace;
-        font-size: 0.85rem; border-left: 4px solid;
+    .main { background-color: #050810; }
+    .stSidebar { background-color: #08090f; border-right: 1px solid #0d1a2e; }
+    h1,h2,h3 { font-family:'Orbitron',monospace !important; letter-spacing:2px; }
+    .quantum-card {
+        background: linear-gradient(135deg,#080c18,#0d1428);
+        border: 1px solid #1a2a4a; border-radius:10px;
+        padding:16px 20px; margin:8px 0;
+        font-family:'Share Tech Mono',monospace;
     }
-    .signal-compra  { background:#001a0a; border-color:#00ff88; color:#00ff88; }
-    .signal-venta   { background:#1a0005; border-color:#ff3355; color:#ff3355; }
-    .signal-neutro  { background:#0a0d1a; border-color:#4488ff; color:#7aabff; }
-    .signal-espera  { background:#1a1200; border-color:#ffaa00; color:#ffaa00; }
-    
-    .metric-card {
-        background: #0d1117; border: 1px solid #1a2535;
-        border-radius: 8px; padding: 12px 16px; margin: 4px 0;
-        font-family: 'Share Tech Mono', monospace;
+    .quantum-title {
+        font-family:'Orbitron',monospace; font-size:0.85rem;
+        color:#4488ff; letter-spacing:3px; text-transform:uppercase;
+        margin-bottom:8px; border-bottom:1px solid #1a2a4a; padding-bottom:6px;
     }
-    .metric-label { color: #4a6080; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; }
-    .metric-value { color: #e0e8ff; font-size: 1.3rem; font-weight: 700; }
-    
-    .score-bar-wrap { background:#111827; border-radius:6px; height:12px; margin:6px 0; overflow:hidden; }
-    .score-bar      { height:100%; border-radius:6px; transition: width 0.5s; }
-    
-    h1,h2,h3 { font-family: 'Rajdhani', sans-serif !important; font-weight:700 !important; }
+    .signal-box { border-radius:8px; padding:14px 18px; margin:8px 0;
+        font-family:'Share Tech Mono',monospace; font-size:0.82rem; border-left:4px solid; }
+    .signal-compra { background:#001a0a; border-color:#00ff88; color:#00ff88; }
+    .signal-venta  { background:#1a0005; border-color:#ff3355; color:#ff3355; }
+    .signal-neutro { background:#0a0d1a; border-color:#4488ff; color:#7aabff; }
+    .signal-espera { background:#1a1200; border-color:#ffaa00; color:#ffaa00; }
+    .metric-card { background:#08090f; border:1px solid #1a2a4a;
+        border-radius:8px; padding:10px 14px; margin:4px 0;
+        font-family:'Share Tech Mono',monospace; }
+    .metric-label { color:#2a4060; font-size:0.7rem; text-transform:uppercase; letter-spacing:1px; }
+    .metric-value { color:#c0d8ff; font-size:1.2rem; font-weight:700; }
+    .score-bar-wrap { background:#0d1428; border-radius:4px; height:10px; margin:5px 0; overflow:hidden; }
+    .score-bar { height:100%; border-radius:4px; }
     .stButton>button {
-        background: linear-gradient(135deg,#0044cc,#0088ff);
-        color:white; border:none; border-radius:6px;
-        font-family:'Rajdhani',sans-serif; font-weight:700;
-        font-size:1rem; letter-spacing:1px;
-        padding:0.6rem 1rem; width:100%;
-        transition: all 0.2s;
+        background:linear-gradient(135deg,#001166,#0044cc,#0088ff);
+        color:#aaddff; border:none; border-radius:6px;
+        font-family:'Orbitron',monospace; font-weight:700;
+        font-size:0.8rem; letter-spacing:2px;
+        padding:0.7rem 1rem; width:100%; transition:all 0.3s;
     }
-    .stButton>button:hover { background: linear-gradient(135deg,#0055ff,#00aaff); transform:translateY(-1px); }
+    .stButton>button:hover { background:linear-gradient(135deg,#0022aa,#0066ff,#00aaff);
+        color:white; transform:translateY(-2px); box-shadow:0 4px 20px #0044ff44; }
     </style>
 """, unsafe_allow_html=True)
 
-
 # ══════════════════════════════════════════════════════════════
-#  CONFIGURACIÓN DE TIMEFRAMES
+#  TIMEFRAMES
 # ══════════════════════════════════════════════════════════════
 TIMEFRAMES = {
-    # label           : (interval_binance, interval_yfinance, days_back, label_display)
-    "1H  — 3 días"   : ("1h",  "1h",  3,    "3 días · velas 1h"),
-    "4H  — 10 días"  : ("4h",  "1h",  10,   "10 días · velas 4h"),
-    "1D  — 1 mes"    : ("1d",  "1d",  30,   "1 mes · velas diarias"),
-    "1D  — 3 meses"  : ("1d",  "1d",  90,   "3 meses · velas diarias"),
-    "1D  — 6 meses"  : ("1d",  "1d",  180,  "6 meses · velas diarias"),
-    "1W  — 1 año"    : ("1d",  "1wk", 365,  "1 año · velas semanales"),
+    "1H  · 3 días"   : ("1h",  "1h",   3,   "3 días · velas 1H"),
+    "4H  · 10 días"  : ("4h",  "1h",   10,  "10 días · velas 4H"),
+    "1D  · 1 mes"    : ("1d",  "1d",   30,  "1 mes · velas diarias"),
+    "1D  · 3 meses"  : ("1d",  "1d",   90,  "3 meses · velas diarias"),
+    "1D  · 6 meses"  : ("1d",  "1d",   180, "6 meses · velas diarias"),
+    "1W  · 1 año"    : ("1d",  "1wk",  365, "1 año · velas semanales"),
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -76,672 +78,1032 @@ TIMEFRAMES = {
 def binance_get_all_symbols():
     try:
         r = requests.get("https://api.binance.com/api/v3/exchangeInfo", timeout=10)
-        data = r.json()
-        return [{"symbol": s["symbol"], "base": s["baseAsset"], "quote": s["quoteAsset"]}
-                for s in data["symbols"]
-                if s["status"] == "TRADING" and s["quoteAsset"] in ("USDT","BTC","ETH","BNB")]
-    except Exception:
-        return []
+        return [{"symbol":s["symbol"],"base":s["baseAsset"],"quote":s["quoteAsset"]}
+                for s in r.json()["symbols"]
+                if s["status"]=="TRADING" and s["quoteAsset"] in ("USDT","BTC","ETH","BNB")]
+    except: return []
 
-def binance_buscar(query):
-    q = query.upper()
-    todos = binance_get_all_symbols()
-    prio = {"USDT":0,"BTC":1,"ETH":2,"BNB":3}
-    found = [p for p in todos if q in p["base"] or q in p["symbol"]]
-    found.sort(key=lambda x: prio.get(x["quote"],9))
+def binance_buscar(q):
+    q=q.upper(); todos=binance_get_all_symbols()
+    prio={"USDT":0,"BTC":1,"ETH":2,"BNB":3}
+    found=[p for p in todos if q in p["base"] or q in p["symbol"]]
+    found.sort(key=lambda x:prio.get(x["quote"],9))
     return found[:8]
 
 def binance_descargar(symbol, interval_bn, dias):
-    start_ms = int((datetime.utcnow() - timedelta(days=dias)).timestamp() * 1000)
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval_bn, "startTime": start_ms, "limit": 1000}
-    filas = []
-    for _ in range(5):  # max 5 páginas
-        r = requests.get(url, params=params, timeout=15)
-        data = r.json()
-        if not data or isinstance(data, dict): break
+    start_ms=int((datetime.utcnow()-timedelta(days=dias)).timestamp()*1000)
+    url="https://api.binance.com/api/v3/klines"
+    params={"symbol":symbol,"interval":interval_bn,"startTime":start_ms,"limit":1000}
+    filas=[]
+    for _ in range(5):
+        r=requests.get(url,params=params,timeout=15); data=r.json()
+        if not data or isinstance(data,dict): break
         filas.extend(data)
-        if len(data) < 1000: break
-        params["startTime"] = data[-1][0] + 1
+        if len(data)<1000: break
+        params["startTime"]=data[-1][0]+1
     if not filas: return pd.DataFrame()
-    df = pd.DataFrame(filas, columns=[
-        "Open time","Open","High","Low","Close","Volume",
+    df=pd.DataFrame(filas,columns=["Open time","Open","High","Low","Close","Volume",
         "Close time","qav","trades","tbb","tbq","ignore"])
-    df["Open time"] = pd.to_datetime(df["Open time"], unit="ms", utc=True)
-    df.set_index("Open time", inplace=True)
-    for col in ["Open","High","Low","Close","Volume"]:
-        df[col] = df[col].astype(float)
+    df["Open time"]=pd.to_datetime(df["Open time"],unit="ms",utc=True)
+    df.set_index("Open time",inplace=True)
+    for col in ["Open","High","Low","Close","Volume"]: df[col]=df[col].astype(float)
     return df[["Open","High","Low","Close","Volume"]]
 
-CG_BASE = "https://api.coingecko.com/api/v3"
+CG_BASE="https://api.coingecko.com/api/v3"
 
 def coingecko_buscar(query):
     try:
-        r = requests.get(f"{CG_BASE}/search", params={"query": query}, timeout=10)
-        return r.json().get("coins", [])[:6]
-    except Exception:
-        return []
+        r=requests.get(f"{CG_BASE}/search",params={"query":query},timeout=10)
+        return r.json().get("coins",[])[:6]
+    except: return []
 
 def coingecko_descargar(coin_id, dias):
-    url = f"{CG_BASE}/coins/{coin_id}/market_chart"
-    params = {"vs_currency": "usd", "days": dias, "interval": "daily" if dias > 3 else "hourly"}
+    url=f"{CG_BASE}/coins/{coin_id}/market_chart"
+    params={"vs_currency":"usd","days":dias,"interval":"daily" if dias>3 else "hourly"}
     try:
-        r = requests.get(url, params=params, timeout=15)
-        if r.status_code == 429:
-            time.sleep(30)
-            r = requests.get(url, params=params, timeout=15)
-        data = r.json()
+        r=requests.get(url,params=params,timeout=15)
+        if r.status_code==429: time.sleep(30); r=requests.get(url,params=params,timeout=15)
+        data=r.json()
         if "prices" not in data: return pd.DataFrame()
-        prices  = pd.DataFrame(data["prices"],         columns=["ts","Close"])
-        volumes = pd.DataFrame(data["total_volumes"],  columns=["ts","Volume"])
-        df = prices.merge(volumes, on="ts")
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-        df.set_index("ts", inplace=True)
-        df["Open"]  = df["Close"].shift(1).fillna(df["Close"])
-        df["High"]  = df["Close"]
-        df["Low"]   = df["Close"]
+        prices=pd.DataFrame(data["prices"],columns=["ts","Close"])
+        volumes=pd.DataFrame(data["total_volumes"],columns=["ts","Volume"])
+        df=prices.merge(volumes,on="ts")
+        df["ts"]=pd.to_datetime(df["ts"],unit="ms",utc=True)
+        df.set_index("ts",inplace=True)
+        df["Open"]=df["Close"].shift(1).fillna(df["Close"])
+        df["High"]=df["Close"]; df["Low"]=df["Close"]
         return df[["Open","High","Low","Close","Volume"]]
-    except Exception:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def yahoo_descargar(ticker, interval_yf, dias):
-    periodo_map = {3:"5d", 10:"1mo", 30:"1mo", 90:"3mo", 180:"6mo", 365:"1y"}
-    periodo = periodo_map.get(dias, "1y")
-    t = yf.Ticker(ticker)
-    df = t.history(period=periodo, interval=interval_yf)
+    pm={3:"5d",10:"1mo",30:"1mo",90:"3mo",180:"6mo",365:"1y"}
+    t=yf.Ticker(ticker); df=t.history(period=pm.get(dias,"1y"),interval=interval_yf)
     return df if not df.empty else pd.DataFrame()
 
 def cargar_datos(ticker, fuente, tf_key):
-    interval_bn, interval_yf, dias, _ = TIMEFRAMES[tf_key]
-    if fuente == "binance":
-        return binance_descargar(ticker, interval_bn, dias)
-    elif fuente == "coingecko":
-        return coingecko_descargar(ticker, dias)
-    else:
-        return yahoo_descargar(ticker, interval_yf, dias)
-
+    ibn, iyf, dias, _ = TIMEFRAMES[tf_key]
+    if fuente=="binance":   return binance_descargar(ticker, ibn, dias)
+    elif fuente=="coingecko": return coingecko_descargar(ticker, dias)
+    else:                   return yahoo_descargar(ticker, iyf, dias)
 
 # ══════════════════════════════════════════════════════════════
-#  MATEMÁTICAS — INDICADORES TÉCNICOS
+#  INDICADORES TÉCNICOS CLÁSICOS
 # ══════════════════════════════════════════════════════════════
-def calcular_rsi(close, period=14):
-    delta = close.diff()
-    gain  = delta.clip(lower=0).rolling(period).mean()
-    loss  = (-delta.clip(upper=0)).rolling(period).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+def calcular_rsi(c,p=14):
+    d=c.diff(); g=d.clip(lower=0).rolling(p).mean(); l=(-d.clip(upper=0)).rolling(p).mean()
+    return 100-(100/(1+g/l.replace(0,np.nan)))
 
-def calcular_macd(close, fast=12, slow=26, signal=9):
-    ema_fast   = close.ewm(span=fast,   adjust=False).mean()
-    ema_slow   = close.ewm(span=slow,   adjust=False).mean()
-    macd_line  = ema_fast - ema_slow
-    signal_line= macd_line.ewm(span=signal, adjust=False).mean()
-    histogram  = macd_line - signal_line
-    return macd_line, signal_line, histogram
+def calcular_macd(c,f=12,s=26,sig=9):
+    ef=c.ewm(span=f,adjust=False).mean(); es=c.ewm(span=s,adjust=False).mean()
+    m=ef-es; sl=m.ewm(span=sig,adjust=False).mean(); return m,sl,m-sl
 
-def calcular_bollinger(close, period=20, std_dev=2):
-    sma   = close.rolling(period).mean()
-    std   = close.rolling(period).std()
-    upper = sma + std_dev * std
-    lower = sma - std_dev * std
-    pct_b = (close - lower) / (upper - lower + 1e-9)  # posición dentro de las bandas 0-1
-    return upper, sma, lower, pct_b
+def calcular_bb(c,p=20,k=2):
+    sma=c.rolling(p).mean(); std=c.rolling(p).std()
+    up=sma+k*std; lo=sma-k*std
+    pct=(c-lo)/(up-lo+1e-9); return up,sma,lo,pct
 
-def calcular_atr(high, low, close, period=14):
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low  - close.shift()).abs()
-    ], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+def calcular_atr(h,l,c,p=14):
+    tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    return tr.rolling(p).mean()
 
-def calcular_ema(close, span):
-    return close.ewm(span=span, adjust=False).mean()
+def calcular_stoch_rsi(c,p=14,sk=3,sd=3):
+    rsi=calcular_rsi(c,p); mn=rsi.rolling(p).min(); mx=rsi.rolling(p).max()
+    st=(rsi-mn)/(mx-mn+1e-9)*100
+    k=st.rolling(sk).mean(); d=k.rolling(sd).mean(); return k,d
 
-def calcular_stoch_rsi(close, period=14, smooth_k=3, smooth_d=3):
-    rsi    = calcular_rsi(close, period)
-    min_r  = rsi.rolling(period).min()
-    max_r  = rsi.rolling(period).max()
-    stoch  = (rsi - min_r) / (max_r - min_r + 1e-9) * 100
-    k      = stoch.rolling(smooth_k).mean()
-    d      = k.rolling(smooth_d).mean()
-    return k, d
-
-def calcular_vwap(df):
-    tp   = (df["High"] + df["Low"] + df["Close"]) / 3
-    vwap = (tp * df["Volume"]).cumsum() / df["Volume"].cumsum()
-    return vwap
-
-def calcular_todos_indicadores(df):
-    c = df["Close"]
-    ind = {}
-    ind["rsi"]              = calcular_rsi(c, 14)
-    ind["macd"], ind["macd_signal"], ind["macd_hist"] = calcular_macd(c)
-    ind["bb_upper"], ind["bb_mid"], ind["bb_lower"], ind["bb_pct"] = calcular_bollinger(c)
-    ind["atr"]              = calcular_atr(df["High"], df["Low"], c)
-    ind["atr_pct"]          = ind["atr"] / c * 100          # volatilidad relativa %
-    ind["ema9"]             = calcular_ema(c, 9)
-    ind["ema21"]            = calcular_ema(c, 21)
-    ind["ema50"]            = calcular_ema(c, 50)
-    ind["ema200"]           = calcular_ema(c, 200)
-    ind["stoch_k"], ind["stoch_d"] = calcular_stoch_rsi(c)
-    ind["vwap"]             = calcular_vwap(df)
-    ind["vol_sma"]          = df["Volume"].rolling(20).mean()
-    ind["vol_ratio"]        = df["Volume"] / ind["vol_sma"]  # > 1.5 = volumen alto
-    ind["momentum"]         = c.pct_change(5) * 100         # retorno 5 periodos
-    ind["retorno_log"]      = np.log(c / c.shift(1))
-    ind["volatilidad"]      = ind["retorno_log"].rolling(15).std() * np.sqrt(252) * 100  # vol anualizada %
+def calcular_indicadores(df):
+    c=df["Close"]; ind={}
+    ind["rsi"]=calcular_rsi(c)
+    ind["macd"],ind["macd_sig"],ind["macd_hist"]=calcular_macd(c)
+    ind["bb_up"],ind["bb_mid"],ind["bb_lo"],ind["bb_pct"]=calcular_bb(c)
+    ind["atr"]=calcular_atr(df["High"],df["Low"],c)
+    ind["atr_pct"]=ind["atr"]/c*100
+    ind["ema9"]=c.ewm(span=9,adjust=False).mean()
+    ind["ema21"]=c.ewm(span=21,adjust=False).mean()
+    ind["ema50"]=c.ewm(span=50,adjust=False).mean()
+    ind["stoch_k"],ind["stoch_d"]=calcular_stoch_rsi(c)
+    tp=(df["High"]+df["Low"]+c)/3
+    ind["vwap"]=(tp*df["Volume"]).cumsum()/df["Volume"].cumsum()
+    ind["vol_sma"]=df["Volume"].rolling(20).mean()
+    ind["vol_ratio"]=df["Volume"]/ind["vol_sma"]
+    ind["momentum"]=c.pct_change(5)*100
+    ind["ret_log"]=np.log(c/c.shift(1))
+    ind["vol_ann"]=ind["ret_log"].rolling(15).std()*np.sqrt(252)*100
     return ind
 
-
 # ══════════════════════════════════════════════════════════════
-#  HMM — MODELO OCULTO DE MARKOV
+#  HMM CLÁSICO
 # ══════════════════════════════════════════════════════════════
 def entrenar_hmm(df, ind):
-    ret = ind["retorno_log"].dropna()
-    vol = ind["volatilidad"].dropna()
-    mom = ind["momentum"].dropna()
-    features = pd.concat([ret, vol, mom], axis=1).dropna()
-    features.columns = ["ret","vol","mom"]
-    X = (features - features.mean()) / features.std()
-    X += np.random.normal(0, 1e-6, X.shape)
-    
-    best_m, best_bic = None, np.inf
-    n_max = min(4, max(2, len(X)//20))
-    for n in range(2, n_max+1):
+    ret=ind["ret_log"].dropna(); vol=ind["vol_ann"].dropna(); mom=ind["momentum"].dropna()
+    feat=pd.concat([ret,vol,mom],axis=1).dropna(); feat.columns=["r","v","m"]
+    X=(feat-feat.mean())/feat.std()+np.random.normal(0,1e-6,feat.shape)
+    best_m,best_b=None,np.inf
+    for n in range(2,min(5,max(2,len(X)//20))+1):
         try:
-            m = hmm.GaussianHMM(n_components=n, covariance_type="full", n_iter=2000, random_state=42)
+            m=hmm.GaussianHMM(n_components=n,covariance_type="full",n_iter=2000,random_state=42)
             m.fit(X)
-            b = m.bic(X)
-            if b < best_bic:
-                best_bic, best_m = b, m
-        except Exception:
-            pass
+            b=m.bic(X)
+            if b<best_b: best_b,best_m=b,m
+        except: pass
+    states=best_m.predict(X)
+    means=best_m.means_[:,0]; idx_r=np.argsort(means); lmap={}
+    lmap[idx_r[0]] ={"nombre":"PÁNICO / BAJISTA",    "color":"#ff3355","emoji":"🔴","señal":"SALIR"}
+    lmap[idx_r[-1]]={"nombre":"ALCISTA / EUFORIA",   "color":"#00ff88","emoji":"🟢","señal":"VIGILAR SALIDA"}
+    for i in range(best_m.n_components):
+        if i not in lmap:
+            if means[i]>0: lmap[i]={"nombre":"ACUMULACIÓN",        "color":"#4488ff","emoji":"🔵","señal":"POSIBLE ENTRADA"}
+            else:          lmap[i]={"nombre":"LATERAL/DISTRIBUCIÓN","color":"#ffaa00","emoji":"🟡","señal":"CAUTELA"}
+    return best_m,states,feat.index,lmap
+
+# ══════════════════════════════════════════════════════════════
+#  ▓▓  MÓDULO 1: OSCILADOR ARMÓNICO CUÁNTICO  ▓▓
+#  Modela el precio como partícula en pozo cuántico.
+#  Los niveles de energía = soportes/resistencias naturales.
+#  La función de onda ψ(x) = probabilidad de precio futuro.
+# ══════════════════════════════════════════════════════════════
+def quantum_harmonic_oscillator(prices, n_levels=5):
+    """
+    Ecuación de Schrödinger para oscilador armónico:
+      Hψ = Eψ  donde H = -ℏ²/2m · d²/dx² + ½mω²x²
     
-    states = best_m.predict(X)
-    return best_m, states, features.index
-
-def etiquetar_hmm(model, df, ind, features_idx):
-    means   = model.means_[:, 0]   # media del retorno
-    vol_m   = model.means_[:, 1]   # media de volatilidad
-    idx_r   = np.argsort(means)
-    labels  = {}
-    labels[idx_r[0]]  = {"nombre":"PÁNICO / BAJISTA",      "color":"#ff3355", "emoji":"🔴", "señal":"ESPERAR"}
-    labels[idx_r[-1]] = {"nombre":"ALCISTA / EUFORIA",     "color":"#00ff88", "emoji":"🟢", "señal":"VIGILAR SALIDA"}
-    for i in range(model.n_components):
-        if i not in labels:
-            if means[i] > 0:
-                labels[i] = {"nombre":"ACUMULACIÓN",           "color":"#4488ff", "emoji":"🔵", "señal":"POSIBLE ENTRADA"}
-            else:
-                labels[i] = {"nombre":"LATERAL / DISTRIBUCIÓN","color":"#ffaa00", "emoji":"🟡", "señal":"CAUTELA"}
-    return labels
-
-
-# ══════════════════════════════════════════════════════════════
-#  SCORE COMPUESTO (0–100) — ventaja de trading
-# ══════════════════════════════════════════════════════════════
-def calcular_score(ind, hmm_estado_label):
-    """Genera un score de 0 a 100 que resume la probabilidad de movimiento alcista."""
-    puntos = []
-
-    # --- RSI (25 pts) ---
-    rsi = ind["rsi"].iloc[-1]
-    if pd.isna(rsi): rsi = 50
-    if rsi < 30:   puntos.append(("RSI Sobreventa",      25, 25, "🟢"))   # señal fuerte compra
-    elif rsi < 45: puntos.append(("RSI Zona baja",       18, 25, "🟡"))
-    elif rsi < 55: puntos.append(("RSI Neutral",         12, 25, "⚪"))
-    elif rsi < 70: puntos.append(("RSI Zona alta",        7, 25, "🟡"))
-    else:          puntos.append(("RSI Sobrecompra",      2, 25, "🔴"))   # señal fuerte venta
-
-    # --- MACD (20 pts) ---
-    hist = ind["macd_hist"].iloc[-1]
-    prev = ind["macd_hist"].iloc[-2] if len(ind["macd_hist"]) > 1 else hist
-    if pd.isna(hist): hist = 0; prev = 0
-    cruce_alcista = (prev <= 0 and hist > 0)
-    cruce_bajista = (prev >= 0 and hist < 0)
-    if cruce_alcista:          puntos.append(("MACD Cruce alcista",   20, 20, "🟢"))
-    elif hist > 0 and hist > prev: puntos.append(("MACD Acelerando ↑",15, 20, "🟢"))
-    elif hist > 0:             puntos.append(("MACD Positivo",        10, 20, "🟡"))
-    elif cruce_bajista:        puntos.append(("MACD Cruce bajista",    0, 20, "🔴"))
-    else:                      puntos.append(("MACD Negativo",         4, 20, "🔴"))
-
-    # --- Bollinger %B (15 pts) ---
-    pct_b = ind["bb_pct"].iloc[-1]
-    if pd.isna(pct_b): pct_b = 0.5
-    if pct_b < 0.05:   puntos.append(("BB Banda inferior",   15, 15, "🟢"))  # rebote potencial
-    elif pct_b < 0.35: puntos.append(("BB Zona baja",        11, 15, "🟡"))
-    elif pct_b < 0.65: puntos.append(("BB Centro",            7, 15, "⚪"))
-    elif pct_b < 0.95: puntos.append(("BB Zona alta",         4, 15, "🟡"))
-    else:              puntos.append(("BB Banda superior",     1, 15, "🔴"))  # posible reversa
-
-    # --- EMAs (20 pts) ---
-    c     = ind["ema9"].index.map(lambda x: x)
-    last  = -1
-    e9    = ind["ema9"].iloc[last]
-    e21   = ind["ema21"].iloc[last]
-    e50   = ind["ema50"].iloc[last]
-    precio= ind["bb_mid"].index  # proxy; usamos bb_mid como close proxy
-    ema_score = 0
-    if not pd.isna(e9) and not pd.isna(e21) and not pd.isna(e50):
-        if e9 > e21 > e50:  ema_score = 20   # alineación alcista perfecta
-        elif e9 > e21:      ema_score = 13
-        elif e9 > e50:      ema_score = 8
-        else:               ema_score = 3
-    puntos.append(("EMAs alineadas", ema_score, 20, "🟢" if ema_score >= 13 else ("🟡" if ema_score >= 8 else "🔴")))
-
-    # --- Volumen (10 pts) ---
-    vol_r = ind["vol_ratio"].iloc[-1]
-    if pd.isna(vol_r): vol_r = 1.0
-    if vol_r > 2.0:    puntos.append(("Volumen muy alto",  10, 10, "🟢"))
-    elif vol_r > 1.3:  puntos.append(("Volumen elevado",    7, 10, "🟡"))
-    elif vol_r > 0.8:  puntos.append(("Volumen normal",     5, 10, "⚪"))
-    else:              puntos.append(("Volumen bajo",        2, 10, "🔴"))
-
-    # --- Stoch RSI (10 pts) ---
-    sk = ind["stoch_k"].iloc[-1]
-    sd = ind["stoch_d"].iloc[-1]
-    if not pd.isna(sk) and not pd.isna(sd):
-        if sk < 20 and sk > sd:    puntos.append(("StochRSI Cruce alcista", 10, 10, "🟢"))
-        elif sk < 30:              puntos.append(("StochRSI Sobreventa",      7, 10, "🟡"))
-        elif sk > 80 and sk < sd:  puntos.append(("StochRSI Cruce bajista",   1, 10, "🔴"))
-        elif sk > 70:              puntos.append(("StochRSI Sobrecompra",      3, 10, "🟡"))
-        else:                      puntos.append(("StochRSI Neutral",          5, 10, "⚪"))
+    Aplicado al mercado:
+      - x = desviación del precio respecto a su media (el "equilibrio")
+      - ω = frecuencia natural del ciclo de precios (estimada de FFT)
+      - Niveles de energía E_n = ℏω(n+½) → soporte/resistencia cuántica
+      - ψ²(x) = densidad de probabilidad del precio
+    """
+    c = np.array(prices, dtype=float)
+    N = len(c)
+    
+    # Normalizar precios alrededor de su media (equilibrio cuántico)
+    mu    = np.mean(c)
+    sigma = np.std(c)
+    x_norm = (c - mu) / sigma   # posición normalizada
+    
+    # Estimar frecuencia natural ω via FFT (ciclo dominante)
+    fft_vals = np.abs(np.fft.rfft(x_norm - np.mean(x_norm)))
+    freqs    = np.fft.rfftfreq(N)
+    if len(fft_vals) > 2:
+        dom_freq = freqs[np.argmax(fft_vals[1:])+1]
+        omega    = 2 * np.pi * max(dom_freq, 1/N)
     else:
-        puntos.append(("StochRSI N/D", 5, 10, "⚪"))
-
-    total_pts  = sum(p[1] for p in puntos)
-    total_max  = sum(p[2] for p in puntos)
-    score      = round(total_pts / total_max * 100)
-    return score, puntos
-
-
-def generar_señal(score, ind, hmm_nombre):
-    """Devuelve señal de trading, SL y TP sugeridos."""
-    precio   = ind["bb_mid"].iloc[-1]   # usaremos el SMA como proxy de precio actual
-    atr      = ind["atr"].iloc[-1]
-    if pd.isna(atr): atr = precio * 0.02
-
-    if score >= 72:
-        señal = "🟢 COMPRA / LONG"
-        clase = "signal-compra"
-        sl    = precio - 1.5 * atr
-        tp1   = precio + 2.0 * atr
-        tp2   = precio + 3.5 * atr
-        desc  = "Múltiples indicadores alineados alcistas. Considerar entrada con gestión de riesgo."
-    elif score >= 55:
-        señal = "🟡 VIGILAR — Posible entrada"
-        clase = "signal-espera"
-        sl    = precio - 2.0 * atr
-        tp1   = precio + 1.5 * atr
-        tp2   = precio + 2.5 * atr
-        desc  = "Señales mixtas con ligero sesgo alcista. Esperar confirmación adicional."
-    elif score >= 38:
-        señal = "⚪ NEUTRAL — Sin señal clara"
-        clase = "signal-neutro"
-        sl    = None; tp1 = None; tp2 = None
-        desc  = "Mercado en equilibrio. Mejor esperar una dirección definida."
-    else:
-        señal = "🔴 VENTA / SHORT o SALIR"
-        clase = "signal-venta"
-        sl    = precio + 1.5 * atr
-        tp1   = precio - 2.0 * atr
-        tp2   = precio - 3.5 * atr
-        desc  = "Indicadores apuntan a debilidad. Considerar reducir exposición o proteger ganancias."
-
-    return señal, clase, sl, tp1, tp2, desc, precio
-
-
-# ══════════════════════════════════════════════════════════════
-#  SIDEBAR — BUSCADOR UNIFICADO
-# ══════════════════════════════════════════════════════════════
-st.sidebar.title("🚀 AI.Lino")
-st.sidebar.caption("Quantum Engine · Multi-Fuente")
-
-st.sidebar.subheader("🔍 Buscar")
-query = st.sidebar.text_input("Acción / Cripto:", placeholder="Ej: Monad, BTC, Tesla...", key="sq")
-
-ticker_final = None; ticker_nombre = None; fuente = None
-
-if query and len(query) >= 2:
-    with st.sidebar:
-        with st.spinner("Buscando..."):
-            try:
-                res_yf    = yf.Search(query, max_results=3, enable_fuzzy_query=True)
-                quotes_yf = res_yf.quotes
-            except Exception:
-                quotes_yf = []
-            quotes_bn = binance_buscar(query)
-            quotes_cg = coingecko_buscar(query)
-
-        opts = []; omap = {}
-        for q in quotes_yf:
-            sym  = q.get("symbol","")
-            name = q.get("longname") or q.get("shortname") or sym
-            lbl  = f"📈 {sym} — {name} [Yahoo]"
-            opts.append(lbl); omap[lbl] = (sym, name, "yahoo")
-        for p in quotes_bn:
-            lbl = f"🟡 {p['symbol']} — {p['base']}/{p['quote']} [Binance]"
-            opts.append(lbl); omap[lbl] = (p["symbol"], f"{p['base']}/{p['quote']}", "binance")
-        for c in quotes_cg:
-            cid = c.get("id",""); nm = c.get("name",cid); sym = c.get("symbol","").upper()
-            rk  = c.get("market_cap_rank","?")
-            lbl = f"🦎 {sym} — {nm} (#{rk}) [CoinGecko]"
-            opts.append(lbl); omap[lbl] = (cid, f"{nm} ({sym})", "coingecko")
-
-        if opts:
-            sel = st.radio("Resultado:", opts, label_visibility="collapsed")
-            if sel:
-                ticker_final, ticker_nombre, fuente = omap[sel]
-                st.success(f"✅ **{ticker_final}**")
-        else:
-            st.warning("Sin resultados.")
-else:
-    st.sidebar.write("**⭐ Favoritos**")
-    favs = {
-        "MON · Monad 🦎":  ("monad",    "Monad (MON)",     "coingecko"),
-        "BTC/USDT 🟡":     ("BTCUSDT",  "Bitcoin/USDT",    "binance"),
-        "ETH/USDT 🔵":     ("ETHUSDT",  "Ethereum/USDT",   "binance"),
-        "SOL/USDT ☀️":     ("SOLUSDT",  "Solana/USDT",     "binance"),
-        "PEPE/USDT 🐸":    ("PEPEUSDT", "Pepe/USDT",       "binance"),
-        "DOGE/USDT 🐕":    ("DOGEUSDT", "Dogecoin/USDT",   "binance"),
-        "NVDA 🟢":         ("NVDA",     "NVIDIA Corp",      "yahoo"),
-        "AAPL 🍎":         ("AAPL",     "Apple Inc",        "yahoo"),
-        "TSLA ⚡":         ("TSLA",     "Tesla Inc",        "yahoo"),
-        "SPY 📊":          ("SPY",      "S&P 500 ETF",      "yahoo"),
+        omega = 2 * np.pi / N
+    
+    # Niveles de energía cuántica: E_n = (n + 0.5) * ω  (ℏ=1)
+    energy_levels = [(n + 0.5) * omega for n in range(n_levels)]
+    
+    # Convertir niveles de energía a precios reales
+    # E = ½mω²x² → x = sqrt(2E/ω²)  → precio = mu ± x*sigma
+    price_levels_up   = []
+    price_levels_down = []
+    for E in energy_levels:
+        x_level = np.sqrt(2 * E / (omega**2 + 1e-10))
+        price_levels_up.append(mu + x_level * sigma)
+        price_levels_down.append(mu - x_level * sigma)
+    
+    # Función de onda ψ_0(x) = exp(-x²/2) · H_n(x)  (estado base)
+    # Usando estado base gaussiano para la posición actual
+    x_grid   = np.linspace(x_norm.min()-1, x_norm.max()+1, 500)
+    psi_sq   = np.exp(-x_grid**2) / (np.sqrt(np.pi))  # |ψ₀|² estado base
+    
+    # Agregar excitaciones: superposición de primeros estados
+    for n in range(1, 4):
+        # Polinomio de Hermite H_n
+        if n == 1:   Hn = 2 * x_grid
+        elif n == 2: Hn = 4*x_grid**2 - 2
+        elif n == 3: Hn = 8*x_grid**3 - 12*x_grid
+        coeff = np.exp(-energy_levels[n] * 0.5)   # peso por energía
+        psi_sq += coeff * Hn**2 * np.exp(-x_grid**2)
+    
+    psi_sq = psi_sq / (psi_sq.sum() + 1e-10)  # normalizar
+    
+    # Posición actual en el potencial
+    x_current = x_norm[-1]
+    V_current  = 0.5 * omega**2 * x_current**2   # energía potencial actual
+    
+    # ¿Está el precio en zona de rebote (pozo) o en resistencia (cresta)?
+    zona = "REBOTE CUÁNTICO" if abs(x_current) > 1.5 else ("EQUILIBRIO" if abs(x_current) < 0.5 else "TRANSICIÓN")
+    
+    return {
+        "x_grid": x_grid, "psi_sq": psi_sq,
+        "price_levels_up": price_levels_up,
+        "price_levels_down": price_levels_down,
+        "energy_levels": energy_levels,
+        "omega": omega, "mu": mu, "sigma": sigma,
+        "x_current": x_current, "V_current": V_current,
+        "zona": zona, "x_norm": x_norm
     }
-    fav_sel = st.sidebar.selectbox("", list(favs.keys()), label_visibility="collapsed")
-    ticker_final, ticker_nombre, fuente = favs[fav_sel]
 
+
+# ══════════════════════════════════════════════════════════════
+#  ▓▓  MÓDULO 2: PRINCIPIO DE INCERTIDUMBRE DE HEISENBERG  ▓▓
+#  Δprecio · Δmomento ≥ ℏ/2
+#  En mercados: no podemos conocer precio Y velocidad exactos.
+#  Cuantifica la zona de incertidumbre operativa.
+# ══════════════════════════════════════════════════════════════
+def heisenberg_uncertainty(prices, ventana=20):
+    """
+    Adaptación financiera del principio ΔxΔp ≥ ℏ/2:
+      - Δx = incertidumbre en precio (desviación estándar local)
+      - Δp = incertidumbre en momentum (desviación del retorno)
+      - ℏ_mercado = constante de incertidumbre empírica del activo
+    
+    Producto de incertidumbre: U = Δx · Δp
+    Si U es GRANDE → mercado caótico, señales poco confiables
+    Si U es PEQUEÑO → mercado predecible, mejores oportunidades
+    """
+    c = pd.Series(prices)
+    
+    # Δx: incertidumbre de posición = volatilidad de precio normalizada
+    delta_x = c.rolling(ventana).std() / c.rolling(ventana).mean()
+    
+    # Δp: incertidumbre de momentum = volatilidad del retorno
+    ret     = np.log(c / c.shift(1))
+    delta_p = ret.rolling(ventana).std() * np.sqrt(ventana)
+    
+    # Producto de incertidumbre U = Δx · Δp (análogo a ΔxΔp)
+    U = delta_x * delta_p
+    
+    # ℏ_mercado: constante de Planck del mercado = mediana histórica de U
+    hbar_mkt = U.median()
+    
+    # Zona de confianza operativa
+    U_norm = U / (hbar_mkt + 1e-10)   # relativo a la constante histórica
+    
+    # Clasificación cuántica
+    clasificacion = pd.Series(index=c.index, dtype=str)
+    clasificacion[U_norm < 0.7]  = "BAJA INCERTIDUMBRE"
+    clasificacion[(U_norm >= 0.7) & (U_norm < 1.3)] = "INCERTIDUMBRE NORMAL"
+    clasificacion[U_norm >= 1.3] = "ALTA INCERTIDUMBRE"
+    clasificacion.fillna("INCERTIDUMBRE NORMAL", inplace=True)
+    
+    # Tunel cuántico: detectar rupturas estadísticas inesperadas
+    # Si el precio cruza 2σ pero U es bajo → posible túnel cuántico (breakout real)
+    zscore = (c - c.rolling(ventana).mean()) / (c.rolling(ventana).std() + 1e-10)
+    tunel  = (zscore.abs() > 2.0) & (U_norm < 1.0)
+    
+    estado_actual = clasificacion.iloc[-1]
+    U_actual      = U_norm.iloc[-1]
+    confianza     = max(0, min(100, int((1.5 - min(U_actual, 1.5)) / 1.5 * 100)))
+    
+    return {
+        "delta_x": delta_x, "delta_p": delta_p,
+        "U": U, "U_norm": U_norm, "hbar_mkt": hbar_mkt,
+        "clasificacion": clasificacion, "tunel": tunel,
+        "estado_actual": estado_actual, "U_actual": U_actual,
+        "confianza": confianza, "zscore": zscore
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  ▓▓  MÓDULO 3: FILTRO DE KALMAN  ▓▓
+#  Estimación óptima del estado "verdadero" del precio
+#  eliminando ruido de mercado con ecuaciones de Riccati.
+# ══════════════════════════════════════════════════════════════
+def kalman_filter(prices):
+    """
+    Filtro de Kalman (hermano cuántico del HMM):
+    
+    Modelo de estado:
+      x_t = A·x_{t-1} + w_t    (ecuación de transición)  w ~ N(0,Q)
+      z_t = H·x_t   + v_t      (ecuación de observación)  v ~ N(0,R)
+    
+    Estado: x = [precio_real, velocidad_precio]
+    Observación: z = precio_observado (con ruido de mercado)
+    
+    Las ecuaciones de Kalman dan la estimación ÓPTIMA del precio real
+    minimizando el error cuadrático medio.
+    """
+    z = np.array(prices, dtype=float)
+    N = len(z)
+    
+    # Matrices del sistema
+    dt = 1.0
+    A  = np.array([[1, dt],   # transición: precio += velocidad
+                   [0,  1]])  # velocidad constante (modelo CV)
+    H  = np.array([[1, 0]])   # observamos solo el precio
+    
+    # Ruidos — estimados de los datos
+    sigma_obs    = np.std(np.diff(z)) * 0.5    # ruido de observación
+    sigma_proc   = np.std(np.diff(z)) * 0.1    # ruido de proceso
+    R = np.array([[sigma_obs**2]])             # covarianza de observación
+    Q = np.array([[sigma_proc**2, 0],
+                  [0, (sigma_proc*0.1)**2]])   # covarianza de proceso
+    
+    # Inicialización
+    x_est  = np.zeros((N, 2))    # estado estimado [precio, velocidad]
+    P_list = [np.eye(2) * sigma_obs**2]
+    
+    x_est[0] = [z[0], 0]
+    
+    # Loop de Kalman
+    for t in range(1, N):
+        # PREDICCIÓN
+        x_pred = A @ x_est[t-1]
+        P_pred = A @ P_list[-1] @ A.T + Q
+        
+        # GANANCIA DE KALMAN
+        S = H @ P_pred @ H.T + R
+        K = P_pred @ H.T @ np.linalg.inv(S)
+        
+        # ACTUALIZACIÓN
+        innovation    = z[t] - H @ x_pred
+        x_est[t]      = x_pred + K.flatten() * innovation.flatten()
+        P_updated     = (np.eye(2) - K @ H) @ P_pred
+        P_list.append(P_updated)
+    
+    precio_kalman   = x_est[:, 0]
+    velocidad_kalman = x_est[:, 1]
+    
+    # Banda de confianza ±2σ del filtro
+    varianzas  = np.array([P[0,0] for P in P_list])
+    banda_sup  = precio_kalman + 2 * np.sqrt(np.abs(varianzas))
+    banda_inf  = precio_kalman - 2 * np.sqrt(np.abs(varianzas))
+    
+    # Señal de Kalman: precio vs línea filtrada
+    precio_actual   = z[-1]
+    kalman_actual   = precio_kalman[-1]
+    vel_actual      = velocidad_kalman[-1]
+    
+    # Tendencia Kalman
+    if vel_actual > sigma_proc * 0.5:   tendencia_k = "ALCISTA ↑"
+    elif vel_actual < -sigma_proc * 0.5: tendencia_k = "BAJISTA ↓"
+    else:                                tendencia_k = "LATERAL →"
+    
+    # Precio sobre/bajo filtro = señal
+    diff_pct = (precio_actual - kalman_actual) / (kalman_actual + 1e-10) * 100
+    
+    return {
+        "precio_kalman": precio_kalman,
+        "velocidad": velocidad_kalman,
+        "banda_sup": banda_sup, "banda_inf": banda_inf,
+        "varianzas": varianzas,
+        "tendencia": tendencia_k,
+        "diff_pct": diff_pct,
+        "vel_actual": vel_actual,
+        "kalman_actual": kalman_actual
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  ▓▓  MÓDULO 4: ENTRELAZAMIENTO DE ACTIVOS  ▓▓
+#  Correlación cuántica: ρ y entropía de Von Neumann
+#  Detecta qué activos se mueven juntos o en espejo.
+# ══════════════════════════════════════════════════════════════
+def quantum_entanglement(df_main, ticker_main, n_dias=90):
+    """
+    Entrelazamiento cuántico financiero:
+    
+    1. Matriz de densidad ρ_ij = correlación normalizada (análogo cuántico)
+    2. Entropía de Von Neumann: S = -Tr(ρ ln ρ)
+       S≈0 → sistema puro (alta correlación / entrelazamiento fuerte)
+       S grande → sistema mixto (activos independientes)
+    3. Estado de Bell financiero: pares que se "miden" juntos
+    """
+    # Activos de referencia para correlacionar
+    pares_ref = {
+        "BTC-USD":  "₿ Bitcoin",
+        "ETH-USD":  "Ξ Ethereum",
+        "SPY":      "📊 S&P 500",
+        "GLD":      "🥇 Oro",
+        "DX-Y.NYB": "💵 USD Index",
+        "^VIX":     "😰 VIX",
+    }
+    
+    ret_main = np.log(df_main["Close"] / df_main["Close"].shift(1)).dropna()
+    
+    correlaciones = {}
+    for sym, nombre in pares_ref.items():
+        if sym == ticker_main: continue
+        try:
+            t   = yf.Ticker(sym)
+            df2 = t.history(period="3mo", interval="1d")
+            if df2.empty or len(df2) < 20: continue
+            ret2 = np.log(df2["Close"] / df2["Close"].shift(1)).dropna()
+            # Alinear índices
+            idx  = ret_main.index.intersection(ret2.index)
+            if len(idx) < 15: continue
+            r1, r2 = ret_main.loc[idx].values, ret2.loc[idx].values
+            corr   = np.corrcoef(r1, r2)[0,1]
+            if not np.isnan(corr):
+                correlaciones[nombre] = {"sym": sym, "corr": corr}
+        except: pass
+    
+    if len(correlaciones) < 2:
+        return None
+    
+    nombres = list(correlaciones.keys())
+    n       = len(nombres)
+    
+    # Matriz de densidad (correlaciones normalizadas)
+    C = np.zeros((n, n))
+    vals = [correlaciones[nm]["corr"] for nm in nombres]
+    for i in range(n):
+        for j in range(n):
+            C[i,j] = (vals[i] * vals[j] + 1) / 2   # normalizar [0,1]
+    np.fill_diagonal(C, 1.0)
+    
+    # Entropía de Von Neumann: S = -Tr(ρ ln ρ)
+    eigenvals = np.linalg.eigvalsh(C)
+    eigenvals = eigenvals[eigenvals > 1e-10] / eigenvals.sum()
+    S_vn      = -np.sum(eigenvals * np.log(eigenvals + 1e-10))
+    S_max     = np.log(n)   # entropía máxima
+    S_norm    = S_vn / (S_max + 1e-10)   # 0=entrelazado, 1=independiente
+    
+    # Clasificar pares
+    for nm in nombres:
+        c = correlaciones[nm]["corr"]
+        if   c >  0.7: correlaciones[nm]["tipo"] = ("ENTRELAZADO ↑↑", "#00ff88")
+        elif c >  0.4: correlaciones[nm]["tipo"] = ("CORRELADO ↑",    "#44aaff")
+        elif c >  -0.4: correlaciones[nm]["tipo"] = ("INDEPENDIENTE ⊥","#aaaaaa")
+        elif c > -0.7: correlaciones[nm]["tipo"] = ("ANTI-CORR ↑↓",  "#ffaa00")
+        else:          correlaciones[nm]["tipo"] = ("ESPEJO CUÁNTICO ↓↑","#ff3355")
+    
+    return {
+        "correlaciones": correlaciones,
+        "nombres": nombres,
+        "C_matrix": C,
+        "S_vn": S_vn, "S_norm": S_norm,
+        "eigenvals_norm": eigenvals
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+#  SCORE COMPUESTO
+# ══════════════════════════════════════════════════════════════
+def calcular_score(ind):
+    p=[]
+    rsi=ind["rsi"].iloc[-1] if not pd.isna(ind["rsi"].iloc[-1]) else 50
+    if rsi<30:   p.append(("RSI Sobreventa",25,25,"🟢"))
+    elif rsi<45: p.append(("RSI Zona baja",18,25,"🟡"))
+    elif rsi<55: p.append(("RSI Neutral",12,25,"⚪"))
+    elif rsi<70: p.append(("RSI Zona alta",7,25,"🟡"))
+    else:        p.append(("RSI Sobrecompra",2,25,"🔴"))
+
+    hist=ind["macd_hist"].iloc[-1]; prev=ind["macd_hist"].iloc[-2] if len(ind["macd_hist"])>1 else hist
+    if pd.isna(hist): hist=0; prev=0
+    if prev<=0 and hist>0:         p.append(("MACD Cruce alcista",20,20,"🟢"))
+    elif hist>0 and hist>prev:     p.append(("MACD Acelerando ↑",15,20,"🟢"))
+    elif hist>0:                   p.append(("MACD Positivo",10,20,"🟡"))
+    elif prev>=0 and hist<0:       p.append(("MACD Cruce bajista",0,20,"🔴"))
+    else:                          p.append(("MACD Negativo",4,20,"🔴"))
+
+    pct=ind["bb_pct"].iloc[-1] if not pd.isna(ind["bb_pct"].iloc[-1]) else 0.5
+    if pct<0.05:   p.append(("BB Banda inf",15,15,"🟢"))
+    elif pct<0.35: p.append(("BB Zona baja",11,15,"🟡"))
+    elif pct<0.65: p.append(("BB Centro",7,15,"⚪"))
+    elif pct<0.95: p.append(("BB Zona alta",4,15,"🟡"))
+    else:          p.append(("BB Banda sup",1,15,"🔴"))
+
+    e9=ind["ema9"].iloc[-1]; e21=ind["ema21"].iloc[-1]; e50=ind["ema50"].iloc[-1]
+    es=0
+    if not any(pd.isna(v) for v in [e9,e21,e50]):
+        if e9>e21>e50: es=20
+        elif e9>e21:   es=13
+        elif e9>e50:   es=8
+        else:          es=3
+    p.append(("EMAs alineadas",es,20,"🟢" if es>=13 else("🟡" if es>=8 else "🔴")))
+
+    vr=ind["vol_ratio"].iloc[-1] if not pd.isna(ind["vol_ratio"].iloc[-1]) else 1
+    if vr>2:   p.append(("Volumen x2+",10,10,"🟢"))
+    elif vr>1.3: p.append(("Vol elevado",7,10,"🟡"))
+    elif vr>0.8: p.append(("Vol normal",5,10,"⚪"))
+    else:        p.append(("Vol bajo",2,10,"🔴"))
+
+    sk=ind["stoch_k"].iloc[-1]; sd=ind["stoch_d"].iloc[-1]
+    if not any(pd.isna(v) for v in [sk,sd]):
+        if sk<20 and sk>sd:   p.append(("StochRSI alcista",10,10,"🟢"))
+        elif sk<30:           p.append(("StochRSI S.venta",7,10,"🟡"))
+        elif sk>80 and sk<sd: p.append(("StochRSI bajista",1,10,"🔴"))
+        elif sk>70:           p.append(("StochRSI S.compra",3,10,"🟡"))
+        else:                 p.append(("StochRSI Neutral",5,10,"⚪"))
+    else: p.append(("StochRSI N/D",5,10,"⚪"))
+
+    sc=round(sum(x[1] for x in p)/sum(x[2] for x in p)*100)
+    return sc,p
+
+def generar_señal(score, ind):
+    precio=ind["bb_mid"].iloc[-1]; atr=ind["atr"].iloc[-1]
+    if pd.isna(atr): atr=precio*0.02
+    if score>=72:
+        return("🟢 COMPRA / LONG","signal-compra",
+               precio-1.5*atr, precio+2*atr, precio+3.5*atr,
+               "Múltiples indicadores alcistas. Considera entrada con SL ajustado.")
+    elif score>=55:
+        return("🟡 VIGILAR — Posible entrada","signal-espera",
+               precio-2*atr, precio+1.5*atr, precio+2.5*atr,
+               "Señales mixtas, sesgo alcista. Espera confirmación.")
+    elif score>=38:
+        return("⚪ NEUTRAL","signal-neutro",None,None,None,
+               "Sin dirección clara. Mejor esperar.")
+    else:
+        return("🔴 VENTA / SALIR","signal-venta",
+               precio+1.5*atr, precio-2*atr, precio-3.5*atr,
+               "Debilidad generalizada. Considera reducir exposición.")
+
+
+# ══════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ══════════════════════════════════════════════════════════════
+st.sidebar.markdown("# 🌌 AI.LINO")
+st.sidebar.markdown("**QUANTUM TRADING ENGINE**")
 st.sidebar.divider()
 
-# Timeframe selector
-tf_key = st.sidebar.selectbox("⏱ Timeframe", list(TIMEFRAMES.keys()), index=2)
+query=st.sidebar.text_input("🔍 Buscar activo:",placeholder="Monad, BTC, Tesla...",key="sq")
+ticker_final=None; ticker_nombre=None; fuente=None
+
+if query and len(query)>=2:
+    with st.sidebar:
+        with st.spinner("Escaneando 3 fuentes..."):
+            try: res_yf=yf.Search(query,max_results=3,enable_fuzzy_query=True); qyf=res_yf.quotes
+            except: qyf=[]
+            qbn=binance_buscar(query); qcg=coingecko_buscar(query)
+        opts=[]; omap={}
+        for q2 in qyf:
+            sym=q2.get("symbol",""); nm=q2.get("longname") or q2.get("shortname") or sym
+            lbl=f"📈 {sym} — {nm} [Yahoo]"; opts.append(lbl); omap[lbl]=(sym,nm,"yahoo")
+        for p in qbn:
+            lbl=f"🟡 {p['symbol']} — {p['base']}/{p['quote']} [Binance]"
+            opts.append(lbl); omap[lbl]=(p["symbol"],f"{p['base']}/{p['quote']}","binance")
+        for c in qcg:
+            cid=c.get("id",""); nm=c.get("name",cid); sym=c.get("symbol","").upper()
+            rk=c.get("market_cap_rank","?")
+            lbl=f"🦎 {sym} — {nm} (#{rk}) [CoinGecko]"; opts.append(lbl)
+            omap[lbl]=(cid,f"{nm} ({sym})","coingecko")
+        if opts:
+            sel=st.radio("",opts,label_visibility="collapsed")
+            if sel: ticker_final,ticker_nombre,fuente=omap[sel]; st.success(f"✅ {ticker_final}")
+        else: st.warning("Sin resultados.")
+else:
+    favs={"MON · Monad 🦎":("monad","Monad (MON)","coingecko"),
+          "BTC/USDT 🟡":("BTCUSDT","Bitcoin/USDT","binance"),
+          "ETH/USDT":("ETHUSDT","Ethereum/USDT","binance"),
+          "SOL/USDT ☀️":("SOLUSDT","Solana/USDT","binance"),
+          "PEPE/USDT 🐸":("PEPEUSDT","Pepe/USDT","binance"),
+          "DOGE/USDT 🐕":("DOGEUSDT","Dogecoin/USDT","binance"),
+          "NVDA 🟢":("NVDA","NVIDIA","yahoo"),
+          "AAPL 🍎":("AAPL","Apple","yahoo"),
+          "TSLA ⚡":("TSLA","Tesla","yahoo"),
+          "SPY 📊":("SPY","S&P500 ETF","yahoo")}
+    fs=st.sidebar.selectbox("⭐ Favoritos:",list(favs.keys()),label_visibility="collapsed")
+    ticker_final,ticker_nombre,fuente=favs[fs]
+
+st.sidebar.divider()
+tf_key=st.sidebar.selectbox("⏱ Timeframe",list(TIMEFRAMES.keys()),index=2)
+
+# Selector de módulos cuánticos
+st.sidebar.markdown("**⚛️ Módulos Cuánticos:**")
+mod_osc    = st.sidebar.toggle("1· Oscilador Armónico",   value=True)
+mod_heisen = st.sidebar.toggle("2· Incertidumbre Heisenberg", value=True)
+mod_kalman = st.sidebar.toggle("3· Filtro de Kalman",     value=True)
+mod_entang = st.sidebar.toggle("4· Entrelazamiento",      value=True)
 
 if ticker_final:
-    bdg = {"yahoo":"📈 Yahoo","binance":"🟡 Binance","coingecko":"🦎 CoinGecko"}.get(fuente,"")
+    bdg={"yahoo":"📈 Yahoo","binance":"🟡 Binance","coingecko":"🦎 CoinGecko"}.get(fuente,"")
     st.sidebar.info(f"📌 **{ticker_final}** · {bdg}")
 
-ejecutar = st.sidebar.button("⚡ ANALIZAR AHORA", use_container_width=True)
-
+ejecutar=st.sidebar.button("⚛️ EJECUTAR ANÁLISIS CUÁNTICO",use_container_width=True)
 st.sidebar.divider()
 st.sidebar.caption("⚠️ Solo educativo. No es asesoría financiera.")
 
 
 # ══════════════════════════════════════════════════════════════
-#  EJECUCIÓN PRINCIPAL
+#  MAIN
 # ══════════════════════════════════════════════════════════════
 if ejecutar:
-    if not ticker_final:
-        st.error("Selecciona un instrumento primero.")
-        st.stop()
+    if not ticker_final: st.error("Selecciona un instrumento."); st.stop()
 
-    bdg = {"yahoo":"📈 Yahoo Finance","binance":"🟡 Binance","coingecko":"🦎 CoinGecko"}.get(fuente,"")
-    _, _, dias, tf_display = TIMEFRAMES[tf_key]
+    bdg={"yahoo":"📈 Yahoo Finance","binance":"🟡 Binance","coingecko":"🦎 CoinGecko"}.get(fuente,"")
+    _,_,dias,tf_disp=TIMEFRAMES[tf_key]
 
-    # ── Descarga de datos ────────────────────────────────────
-    with st.spinner(f"⬇️ Descargando {ticker_final} desde {bdg}..."):
-        df_raw = cargar_datos(ticker_final, fuente, tf_key)
+    with st.spinner("⬇️ Descargando datos..."):
+        df_raw=cargar_datos(ticker_final,fuente,tf_key)
+    if df_raw is None or df_raw.empty or len(df_raw)<20:
+        st.error("❌ Datos insuficientes. Prueba un timeframe mayor."); st.stop()
 
-    if df_raw is None or df_raw.empty or len(df_raw) < 20:
-        st.error(f"❌ No hay suficientes datos para **{ticker_final}** en este timeframe. Prueba un período mayor.")
-        st.stop()
+    with st.spinner("🧮 Calculando indicadores..."):
+        ind=calcular_indicadores(df_raw)
 
-    # ── Indicadores técnicos ─────────────────────────────────
-    with st.spinner("🧮 Calculando indicadores técnicos..."):
-        ind = calcular_todos_indicadores(df_raw)
+    with st.spinner("🤖 Entrenando HMM..."):
+        try: best_model,states,feat_idx,lmap=entrenar_hmm(df_raw,ind); hmm_ok=True
+        except: hmm_ok=False; lmap={}
 
-    # ── HMM ─────────────────────────────────────────────────
-    with st.spinner("🤖 Entrenando modelo HMM..."):
-        try:
-            best_model, states, feat_idx = entrenar_hmm(df_raw, ind)
-            labels_map = etiquetar_hmm(best_model, df_raw, ind, feat_idx)
-            hmm_ok = True
-        except Exception as e:
-            hmm_ok = False
+    score,desglose=calcular_score(ind)
+    señal,cls,sl,tp1,tp2,desc=generar_señal(score,ind)
+    precio_actual=df_raw["Close"].iloc[-1]
+    cambio_1p=df_raw["Close"].pct_change(1).iloc[-1]*100
 
-    # ── Score y señal ─────────────────────────────────────────
-    hmm_nombre = labels_map[states[-1]]["nombre"] if hmm_ok else "N/D"
-    score, desglose = calcular_score(ind, hmm_nombre)
-    señal, clase_señal, sl, tp1, tp2, desc_señal, precio_ref = generar_señal(score, ind, hmm_nombre)
+    # ── HEADER ──────────────────────────────────────────────
+    st.markdown(f"## ⚛️ {ticker_nombre}")
+    st.caption(f"{bdg} · {tf_disp} · {len(df_raw)} velas · {datetime.utcnow().strftime('%H:%M UTC')}")
 
-    precio_actual = df_raw["Close"].iloc[-1]
-    cambio_1p     = df_raw["Close"].pct_change(1).iloc[-1] * 100
-    vol_actual    = ind["atr_pct"].iloc[-1]
-
-    # ══════════════════════════════════════════════════════════
-    #  UI — HEADER
-    # ══════════════════════════════════════════════════════════
-    st.markdown(f"## {ticker_nombre}")
-    st.caption(f"{bdg}  ·  {tf_display}  ·  {len(df_raw)} velas  ·  Actualizado: {datetime.utcnow().strftime('%H:%M UTC')}")
-
-    # ── Fila 1: métricas rápidas ─────────────────────────────
-    c1,c2,c3,c4,c5 = st.columns(5)
-    precio_fmt = f"${precio_actual:,.6f}" if precio_actual < 1 else f"${precio_actual:,.4f}" if precio_actual < 10 else f"${precio_actual:,.2f}"
-    c1.metric("Precio",      precio_fmt, f"{cambio_1p:+.2f}%")
-    c2.metric("RSI (14)",    f"{ind['rsi'].iloc[-1]:.1f}" if not pd.isna(ind['rsi'].iloc[-1]) else "N/D")
-    c3.metric("Volatilidad", f"{vol_actual:.1f}%" if not pd.isna(vol_actual) else "N/D")
-    c4.metric("Vol. Ratio",  f"{ind['vol_ratio'].iloc[-1]:.2f}x" if not pd.isna(ind['vol_ratio'].iloc[-1]) else "N/D")
-    c5.metric("Score IA",    f"{score}/100")
-
+    pfmt=f"${precio_actual:,.6f}" if precio_actual<1 else f"${precio_actual:,.4f}" if precio_actual<10 else f"${precio_actual:,.2f}"
+    c1,c2,c3,c4,c5=st.columns(5)
+    c1.metric("Precio",pfmt,f"{cambio_1p:+.2f}%")
+    c2.metric("RSI(14)",f"{ind['rsi'].iloc[-1]:.1f}" if not pd.isna(ind['rsi'].iloc[-1]) else "N/D")
+    c3.metric("Volatilidad",f"{ind['atr_pct'].iloc[-1]:.2f}%" if not pd.isna(ind['atr_pct'].iloc[-1]) else "N/D")
+    c4.metric("Vol Ratio",f"{ind['vol_ratio'].iloc[-1]:.2f}x" if not pd.isna(ind['vol_ratio'].iloc[-1]) else "N/D")
+    c5.metric("Score IA",f"{score}/100")
     st.divider()
 
-    # ── Fila 2: Gráfico + Panel derecho ──────────────────────
-    col_chart, col_panel = st.columns([3, 1])
-
-    with col_chart:
+    # ── GRÁFICO PRINCIPAL + SEÑAL ────────────────────────────
+    col_ch,col_pn=st.columns([3,1])
+    with col_ch:
         plt.style.use("dark_background")
-        fig = plt.figure(figsize=(13, 10), facecolor="#080c14")
-        gs  = gridspec.GridSpec(4, 1, figure=fig, hspace=0.08,
-                                height_ratios=[3, 1, 1, 1])
-
-        ax1 = fig.add_subplot(gs[0])  # Precio + HMM + EMAs + BB
-        ax2 = fig.add_subplot(gs[1], sharex=ax1)  # Volumen
-        ax3 = fig.add_subplot(gs[2], sharex=ax1)  # RSI + StochRSI
-        ax4 = fig.add_subplot(gs[3], sharex=ax1)  # MACD
-
-        idx = df_raw.index
-        c   = df_raw["Close"]
-
-        # --- ax1: Precio con colores HMM ---
+        fig=plt.figure(figsize=(13,10),facecolor="#050810")
+        gs=gridspec.GridSpec(4,1,figure=fig,hspace=0.06,height_ratios=[3,1,1,1])
+        ax1=fig.add_subplot(gs[0]); ax2=fig.add_subplot(gs[1],sharex=ax1)
+        ax3=fig.add_subplot(gs[2],sharex=ax1); ax4=fig.add_subplot(gs[3],sharex=ax1)
+        idx=df_raw.index; c_ser=df_raw["Close"]
+        BG="#050810"
         if hmm_ok:
-            close_feat = df_raw["Close"].loc[feat_idx]
+            ca=df_raw["Close"].loc[feat_idx]
             for i in range(best_model.n_components):
-                mask = states == i
-                ax1.scatter(feat_idx[mask], close_feat[mask],
-                            color=labels_map[i]["color"], s=12, alpha=0.7, zorder=3)
-        ax1.plot(idx, c, color="#334466", linewidth=0.8, alpha=0.5, zorder=2)
-        ax1.plot(idx, ind["ema9"],   color="#ffdd44", linewidth=1,   alpha=0.8, label="EMA9")
-        ax1.plot(idx, ind["ema21"],  color="#ff8844", linewidth=1,   alpha=0.8, label="EMA21")
-        ax1.plot(idx, ind["ema50"],  color="#cc44ff", linewidth=1.2, alpha=0.9, label="EMA50")
-        ax1.fill_between(idx, ind["bb_upper"], ind["bb_lower"],
-                         alpha=0.06, color="#4488ff", label="Bollinger")
-        ax1.plot(idx, ind["bb_upper"], color="#2255aa", linewidth=0.7, linestyle="--")
-        ax1.plot(idx, ind["bb_lower"], color="#2255aa", linewidth=0.7, linestyle="--")
-        if fuente != "coingecko":
-            ax1.plot(idx, ind["vwap"], color="#00ffcc", linewidth=0.9, linestyle=":", alpha=0.7, label="VWAP")
-        ax1.set_ylabel("Precio", color="#4a6080", fontsize=9)
-        ax1.legend(loc="upper left", fontsize=7, framealpha=0.3)
-        ax1.set_facecolor("#080c14")
-        ax1.tick_params(labelbottom=False, colors="#4a6080")
-        for sp in ax1.spines.values(): sp.set_color("#1a2535")
-
-        # --- ax2: Volumen con color por dirección ---
-        colores_vol = ["#00ff88" if df_raw["Close"].iloc[i] >= df_raw["Open"].iloc[i] else "#ff3355"
-                       for i in range(len(df_raw))]
-        ax2.bar(idx, df_raw["Volume"], color=colores_vol, alpha=0.6, width=0.8)
-        ax2.plot(idx, ind["vol_sma"] if "vol_sma" in ind else df_raw["Volume"].rolling(20).mean(),
-                 color="#ffaa00", linewidth=1, alpha=0.8)
-        ax2.set_ylabel("Vol", color="#4a6080", fontsize=8)
-        ax2.set_facecolor("#080c14")
-        ax2.tick_params(labelbottom=False, colors="#4a6080")
-        for sp in ax2.spines.values(): sp.set_color("#1a2535")
-
-        # --- ax3: RSI + zonas ---
-        ax3.plot(idx, ind["rsi"], color="#ff8844", linewidth=1.2, label="RSI14")
-        ax3.plot(idx, ind["stoch_k"], color="#44aaff", linewidth=0.9, alpha=0.7, label="StochK")
-        ax3.axhline(70, color="#ff3355", linewidth=0.7, linestyle="--", alpha=0.6)
-        ax3.axhline(30, color="#00ff88", linewidth=0.7, linestyle="--", alpha=0.6)
-        ax3.axhline(50, color="#334466", linewidth=0.5, linestyle=":")
-        ax3.fill_between(idx, 70, 100, alpha=0.05, color="#ff3355")
-        ax3.fill_between(idx, 0,   30, alpha=0.05, color="#00ff88")
-        ax3.set_ylim(0, 100)
-        ax3.set_ylabel("RSI", color="#4a6080", fontsize=8)
-        ax3.legend(loc="upper left", fontsize=7, framealpha=0.3)
-        ax3.set_facecolor("#080c14")
-        ax3.tick_params(labelbottom=False, colors="#4a6080")
-        for sp in ax3.spines.values(): sp.set_color("#1a2535")
-
-        # --- ax4: MACD ---
-        colors_hist = ["#00ff88" if v >= 0 else "#ff3355" for v in ind["macd_hist"]]
-        ax4.bar(idx, ind["macd_hist"], color=colors_hist, alpha=0.7, width=0.8)
-        ax4.plot(idx, ind["macd"],        color="#4488ff", linewidth=1.2, label="MACD")
-        ax4.plot(idx, ind["macd_signal"], color="#ffaa00", linewidth=1,   label="Signal")
-        ax4.axhline(0, color="#334466", linewidth=0.5, linestyle=":")
-        ax4.set_ylabel("MACD", color="#4a6080", fontsize=8)
-        ax4.legend(loc="upper left", fontsize=7, framealpha=0.3)
-        ax4.set_facecolor("#080c14")
-        ax4.tick_params(colors="#4a6080", labelrotation=30, labelsize=7)
-        for sp in ax4.spines.values(): sp.set_color("#1a2535")
-
-        plt.setp(ax1.xaxis.get_majorticklabels(), visible=False)
-        plt.setp(ax2.xaxis.get_majorticklabels(), visible=False)
-        plt.setp(ax3.xaxis.get_majorticklabels(), visible=False)
-
+                mask=states==i
+                ax1.scatter(feat_idx[mask],ca[mask],color=lmap[i]["color"],s=10,alpha=0.7,zorder=3)
+        ax1.plot(idx,c_ser,color="#1a2a4a",lw=0.8,alpha=0.5,zorder=2)
+        ax1.plot(idx,ind["ema9"],color="#ffdd44",lw=1,alpha=0.8,label="EMA9")
+        ax1.plot(idx,ind["ema21"],color="#ff8844",lw=1,alpha=0.8,label="EMA21")
+        ax1.plot(idx,ind["ema50"],color="#cc44ff",lw=1.2,alpha=0.9,label="EMA50")
+        ax1.fill_between(idx,ind["bb_up"],ind["bb_lo"],alpha=0.06,color="#4488ff")
+        ax1.plot(idx,ind["bb_up"],color="#224488",lw=0.7,ls="--")
+        ax1.plot(idx,ind["bb_lo"],color="#224488",lw=0.7,ls="--")
+        ax1.legend(loc="upper left",fontsize=7,framealpha=0.3)
+        for ax in [ax1,ax2,ax3,ax4]: ax.set_facecolor(BG); [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
+        ax1.tick_params(labelbottom=False,colors="#2a4060")
+        cv=["#00ff88" if df_raw["Close"].iloc[i]>=df_raw["Open"].iloc[i] else "#ff3355" for i in range(len(df_raw))]
+        ax2.bar(idx,df_raw["Volume"],color=cv,alpha=0.6,width=0.8)
+        ax2.plot(idx,ind["vol_sma"],color="#ffaa00",lw=1,alpha=0.8)
+        ax2.tick_params(labelbottom=False,colors="#2a4060"); ax2.set_ylabel("Vol",color="#2a4060",fontsize=8)
+        ax3.plot(idx,ind["rsi"],color="#ff8844",lw=1.2,label="RSI")
+        ax3.plot(idx,ind["stoch_k"],color="#44aaff",lw=0.9,alpha=0.7,label="StochK")
+        ax3.axhline(70,color="#ff3355",lw=0.7,ls="--",alpha=0.6)
+        ax3.axhline(30,color="#00ff88",lw=0.7,ls="--",alpha=0.6)
+        ax3.fill_between(idx,70,100,alpha=0.05,color="#ff3355")
+        ax3.fill_between(idx,0,30,alpha=0.05,color="#00ff88")
+        ax3.set_ylim(0,100); ax3.legend(loc="upper left",fontsize=7,framealpha=0.3)
+        ax3.tick_params(labelbottom=False,colors="#2a4060"); ax3.set_ylabel("RSI",color="#2a4060",fontsize=8)
+        ch=["#00ff88" if v>=0 else "#ff3355" for v in ind["macd_hist"]]
+        ax4.bar(idx,ind["macd_hist"],color=ch,alpha=0.7,width=0.8)
+        ax4.plot(idx,ind["macd"],color="#4488ff",lw=1.2,label="MACD")
+        ax4.plot(idx,ind["macd_sig"],color="#ffaa00",lw=1,label="Signal")
+        ax4.axhline(0,color="#1a2a4a",lw=0.5,ls=":")
+        ax4.legend(loc="upper left",fontsize=7,framealpha=0.3)
+        ax4.tick_params(colors="#2a4060",labelrotation=30,labelsize=7); ax4.set_ylabel("MACD",color="#2a4060",fontsize=8)
         st.pyplot(fig)
 
-    # ── Panel derecho: señal, score, métricas ────────────────
-    with col_panel:
-
-        # SEÑAL PRINCIPAL
-        st.markdown(f"""
-        <div class="signal-box {clase_señal}">
-            <div style="font-size:1.1rem; font-weight:700; margin-bottom:6px">{señal}</div>
-            <div style="font-size:0.78rem; opacity:0.8">{desc_señal}</div>
-        </div>""", unsafe_allow_html=True)
-
-        # HMM Régimen
+    with col_pn:
+        st.markdown(f'<div class="signal-box {cls}"><div style="font-size:1.05rem;font-weight:700;margin-bottom:6px">{señal}</div><div style="font-size:0.77rem;opacity:0.8">{desc}</div></div>',unsafe_allow_html=True)
         if hmm_ok:
-            estado_actual = labels_map[states[-1]]
-            st.markdown(f"""
-            <div class="metric-card" style="border-left:3px solid {estado_actual['color']}">
-                <div class="metric-label">Régimen HMM</div>
-                <div class="metric-value" style="color:{estado_actual['color']};font-size:1rem">
-                    {estado_actual['emoji']} {estado_actual['nombre']}
-                </div>
-                <div style="color:#4a6080;font-size:0.75rem;margin-top:4px">
-                    Permanencia: {best_model.transmat_[states[-1], states[-1]]*100:.0f}%
-                </div>
-            </div>""", unsafe_allow_html=True)
+            ea=lmap[states[-1]]
+            st.markdown(f'<div class="metric-card" style="border-left:3px solid {ea["color"]}"><div class="metric-label">Régimen HMM</div><div class="metric-value" style="color:{ea["color"]};font-size:0.95rem">{ea["emoji"]} {ea["nombre"]}</div><div style="color:#2a4060;font-size:0.72rem;margin-top:3px">Permanencia: {best_model.transmat_[states[-1],states[-1]]*100:.0f}%</div></div>',unsafe_allow_html=True)
+        sc=("#00ff88" if score>=65 else("#ffaa00" if score>=45 else "#ff3355"))
+        st.markdown(f'<div class="metric-card"><div class="metric-label">Score Trading</div><div class="metric-value" style="color:{sc}">{score}/100</div><div class="score-bar-wrap"><div class="score-bar" style="width:{score}%;background:{sc}"></div></div></div>',unsafe_allow_html=True)
+        def fp(v):
+            if v is None: return "—"
+            return f"${v:,.6f}" if v<1 else f"${v:,.4f}" if v<10 else f"${v:,.2f}"
+        if sl:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">Niveles ATR</div><div style="color:#ff3355;font-size:0.82rem">🛑 SL: {fp(sl)}</div><div style="color:#ffaa00;font-size:0.82rem">🎯 TP1: {fp(tp1)}</div><div style="color:#00ff88;font-size:0.82rem">🎯 TP2: {fp(tp2)}</div></div>',unsafe_allow_html=True)
+        st.markdown("**Score:**")
+        for nm,pts,mx,em in desglose:
+            pct=pts/mx*100; col="#00ff88" if pct>=70 else("#ffaa00" if pct>=40 else "#ff3355")
+            st.markdown(f'<div style="margin:2px 0"><div style="display:flex;justify-content:space-between;font-size:0.72rem;color:#4a6080"><span>{em} {nm}</span><span style="color:{col}">{pts}/{mx}</span></div><div class="score-bar-wrap" style="height:5px"><div class="score-bar" style="width:{pct:.0f}%;background:{col}"></div></div></div>',unsafe_allow_html=True)
 
-        # SCORE BAR
-        score_color = "#00ff88" if score >= 65 else ("#ffaa00" if score >= 45 else "#ff3355")
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Score de Trading</div>
-            <div class="metric-value" style="color:{score_color}">{score} / 100</div>
-            <div class="score-bar-wrap">
-                <div class="score-bar" style="width:{score}%;background:{score_color}"></div>
-            </div>
-        </div>""", unsafe_allow_html=True)
-
-        # SL / TP
-        if sl is not None:
-            def fmt_p(v):
-                if v is None: return "—"
-                return f"${v:,.6f}" if v < 1 else f"${v:,.4f}" if v < 10 else f"${v:,.2f}"
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Niveles sugeridos (ATR×)</div>
-                <div style="color:#ff3355;font-size:0.85rem">🛑 Stop Loss:  {fmt_p(sl)}</div>
-                <div style="color:#ffaa00;font-size:0.85rem">🎯 TP1:  {fmt_p(tp1)}</div>
-                <div style="color:#00ff88;font-size:0.85rem">🎯 TP2:  {fmt_p(tp2)}</div>
-                <div style="color:#4a6080;font-size:0.72rem;margin-top:4px">Basado en ATR-14</div>
-            </div>""", unsafe_allow_html=True)
-
-        # DESGLOSE DEL SCORE
-        st.markdown("**Desglose del Score:**")
-        for nombre, pts, max_pts, emoji in desglose:
-            pct = pts / max_pts * 100
-            color = "#00ff88" if pct >= 70 else ("#ffaa00" if pct >= 40 else "#ff3355")
-            st.markdown(f"""
-            <div style="margin:3px 0">
-                <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#8899aa">
-                    <span>{emoji} {nombre}</span>
-                    <span style="color:{color}">{pts}/{max_pts}</span>
-                </div>
-                <div class="score-bar-wrap" style="height:6px">
-                    <div class="score-bar" style="width:{pct:.0f}%;background:{color}"></div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-    # ══════════════════════════════════════════════════════════
-    #  TABLA DE INDICADORES COMPLETA
-    # ══════════════════════════════════════════════════════════
     st.divider()
-    with st.expander("📊 Tabla completa de indicadores", expanded=False):
-        rsi_v    = ind["rsi"].iloc[-1]
-        macd_v   = ind["macd"].iloc[-1]
-        msig_v   = ind["macd_signal"].iloc[-1]
-        mhist_v  = ind["macd_hist"].iloc[-1]
-        bb_u     = ind["bb_upper"].iloc[-1]
-        bb_l     = ind["bb_lower"].iloc[-1]
-        bb_m     = ind["bb_mid"].iloc[-1]
-        atr_v    = ind["atr"].iloc[-1]
-        atr_pct  = ind["atr_pct"].iloc[-1]
-        sk, sd   = ind["stoch_k"].iloc[-1], ind["stoch_d"].iloc[-1]
-        e9,e21,e50,e200 = ind["ema9"].iloc[-1],ind["ema21"].iloc[-1],ind["ema50"].iloc[-1],ind["ema200"].iloc[-1]
-        vr       = ind["vol_ratio"].iloc[-1]
-        mom      = ind["momentum"].iloc[-1]
 
-        def fv(v, dec=4):
-            if pd.isna(v): return "N/D"
-            return f"{v:.{dec}f}"
+    # ══════════════════════════════════════════════════════════
+    #  MÓDULOS CUÁNTICOS
+    # ══════════════════════════════════════════════════════════
+    st.markdown("## ⚛️ ANÁLISIS CUÁNTICO")
 
+    prices_arr = df_raw["Close"].values
+
+    # ── MÓDULO 1: OSCILADOR ARMÓNICO ────────────────────────
+    if mod_osc:
+        with st.expander("🎵  MÓDULO 1 — Oscilador Armónico Cuántico  (Ec. de Schrödinger)", expanded=True):
+            st.markdown("""
+            <div class="quantum-card">
+            <div class="quantum-title">Ecuación de Schrödinger · Ĥψ = Eψ</div>
+            Modela el precio como una <b>partícula cuántica en un pozo de potencial parabólico</b>.
+            Los <b>niveles de energía E_n = ℏω(n+½)</b> definen soportes y resistencias naturales del activo.
+            La función de onda <b>ψ²(x)</b> muestra la <i>densidad de probabilidad</i> de precio futuro.
+            </div>""", unsafe_allow_html=True)
+
+            with st.spinner("Resolviendo ecuación de Schrödinger..."):
+                qho = quantum_harmonic_oscillator(prices_arr)
+
+            c1q, c2q = st.columns([2, 1])
+            with c1q:
+                fig, axes = plt.subplots(1, 2, figsize=(12, 5), facecolor="#050810")
+                # Panel izquierdo: precio + niveles cuánticos
+                ax = axes[0]; ax.set_facecolor("#050810")
+                ax.plot(prices_arr, color="#4488ff", lw=1.2, alpha=0.9, label="Precio")
+                colors_levels = ["#00ff88","#44aaff","#ffaa00","#ff8844","#ff3355"]
+                for i,(up,down) in enumerate(zip(qho["price_levels_up"], qho["price_levels_down"])):
+                    if up <= prices_arr.max()*1.2 and up > 0:
+                        ax.axhline(up,   color=colors_levels[i], lw=1, ls="--", alpha=0.8,
+                                   label=f"E{i+1}↑ {fp(up)}")
+                    if down > 0 and down >= prices_arr.min()*0.8:
+                        ax.axhline(down, color=colors_levels[i], lw=1, ls=":", alpha=0.6,
+                                   label=f"E{i+1}↓ {fp(down)}")
+                ax.legend(fontsize=7, framealpha=0.3, loc="upper left")
+                ax.set_title("Niveles de Energía Cuántica\n(Soportes/Resistencias)", color="#4488ff", fontsize=10)
+                ax.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
+                # Panel derecho: función de onda ψ²
+                ax2 = axes[1]; ax2.set_facecolor("#050810")
+                # Gradiente de color para la función de onda
+                ax2.fill_betweenx(qho["x_grid"] * qho["sigma"] + qho["mu"],
+                                  0, qho["psi_sq"],
+                                  alpha=0.4, color="#4488ff")
+                ax2.plot(qho["psi_sq"], qho["x_grid"] * qho["sigma"] + qho["mu"],
+                         color="#00aaff", lw=2)
+                ax2.axhline(prices_arr[-1], color="#ffdd44", lw=1.5, ls="--",
+                            label=f"Precio actual: {fp(prices_arr[-1])}")
+                ax2.axhline(qho["mu"], color="#00ff88", lw=1, ls=":",
+                            label=f"Equilibrio: {fp(qho['mu'])}")
+                ax2.legend(fontsize=7, framealpha=0.3)
+                ax2.set_title("|ψ|² — Densidad de Probabilidad\nde Precio Futuro", color="#4488ff", fontsize=10)
+                ax2.set_xlabel("Probabilidad", color="#2a4060", fontsize=8)
+                ax2.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax2.spines.values()]
+                plt.tight_layout()
+                st.pyplot(fig)
+
+            with c2q:
+                zona_color = {"REBOTE CUÁNTICO":"#00ff88","EQUILIBRIO":"#4488ff","TRANSICIÓN":"#ffaa00"}.get(qho["zona"],"#aaaaaa")
+                st.markdown(f"""
+                <div class="metric-card" style="border-left:3px solid {zona_color}">
+                    <div class="metric-label">Zona Cuántica Actual</div>
+                    <div class="metric-value" style="color:{zona_color};font-size:1rem">{qho['zona']}</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Frecuencia Natural ω</div>
+                    <div class="metric-value">{qho['omega']:.4f} rad/período</div>
+                    <div style="color:#2a4060;font-size:0.72rem">Ciclo dominante detectado por FFT</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Energía Potencial Actual</div>
+                    <div class="metric-value">{qho['V_current']:.4f} u.c.</div>
+                    <div style="color:#2a4060;font-size:0.72rem">½ω²x² — posición en el pozo</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown("**Niveles de soporte/resistencia:**")
+                for i,(up,down) in enumerate(zip(qho["price_levels_up"][:4],qho["price_levels_down"][:4])):
+                    st.markdown(f"""
+                    <div style="display:flex;gap:8px;margin:3px 0;font-family:'Share Tech Mono',monospace;font-size:0.78rem">
+                        <span style="color:#2a4060">E{i+1}</span>
+                        <span style="color:#00ff88">↑ {fp(up)}</span>
+                        <span style="color:#ff3355">↓ {fp(down)}</span>
+                    </div>""", unsafe_allow_html=True)
+
+    # ── MÓDULO 2: HEISENBERG ─────────────────────────────────
+    if mod_heisen:
+        with st.expander("🌊  MÓDULO 2 — Principio de Incertidumbre de Heisenberg", expanded=True):
+            st.markdown("""
+            <div class="quantum-card">
+            <div class="quantum-title">ΔP · Δx ≥ ℏ/2 — Aplicado al Mercado</div>
+            No podemos conocer con precisión simultánea el <b>precio</b> y su <b>momentum</b>.
+            <br>El <b>producto de incertidumbre U = Δx·Δp</b> cuantifica qué tan predecible es el mercado.
+            <br>U pequeño = señales más confiables. U grande = mercado caótico.
+            <br>Detección de <b>túnel cuántico</b>: rupturas estadísticas en zona de baja incertidumbre = breakout real.
+            </div>""", unsafe_allow_html=True)
+
+            with st.spinner("Calculando principio de incertidumbre..."):
+                heis = heisenberg_uncertainty(prices_arr)
+
+            c1h, c2h = st.columns([2, 1])
+            with c1h:
+                fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True, facecolor="#050810")
+                fig.subplots_adjust(hspace=0.1)
+                n = len(prices_arr)
+                x = range(n)
+                axes[0].plot(prices_arr, color="#4488ff", lw=1.2, label="Precio")
+                # Marcar túneles cuánticos
+                tunel_idx = np.where(heis["tunel"].values)[0]
+                if len(tunel_idx):
+                    axes[0].scatter(tunel_idx, prices_arr[tunel_idx],
+                                    color="#ffdd44", s=40, zorder=5, label="⚡ Túnel Cuántico")
+                axes[0].legend(fontsize=7, framealpha=0.3)
+                axes[0].set_title("Precio + Breakouts por Túnel Cuántico", color="#4488ff", fontsize=9)
+                # Incertidumbre de posición Δx
+                axes[1].fill_between(x, heis["delta_x"].values, alpha=0.4, color="#ff8844")
+                axes[1].plot(heis["delta_x"].values, color="#ff8844", lw=1.2, label="Δx (precio)")
+                axes[1].set_ylabel("Δx", color="#2a4060", fontsize=8)
+                axes[1].set_title("Incertidumbre de Posición Δx", color="#ff8844", fontsize=9)
+                # Producto de incertidumbre U
+                u_vals = heis["U_norm"].values
+                colors_u = []
+                for uv in u_vals:
+                    if pd.isna(uv): colors_u.append("#2a4060")
+                    elif uv < 0.7:  colors_u.append("#00ff88")
+                    elif uv < 1.3:  colors_u.append("#ffaa00")
+                    else:           colors_u.append("#ff3355")
+                axes[2].bar(x, np.nan_to_num(u_vals), color=colors_u, alpha=0.8, width=0.8)
+                axes[2].axhline(1.0, color="#ffaa00", lw=1, ls="--", alpha=0.7, label="ℏ_mercado")
+                axes[2].legend(fontsize=7, framealpha=0.3)
+                axes[2].set_title("Producto de Incertidumbre U (verde=predecible)", color="#4488ff", fontsize=9)
+                for ax in axes:
+                    ax.set_facecolor("#050810"); ax.tick_params(colors="#2a4060")
+                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
+                st.pyplot(fig)
+
+            with c2h:
+                e_col={"BAJA INCERTIDUMBRE":"#00ff88","INCERTIDUMBRE NORMAL":"#ffaa00","ALTA INCERTIDUMBRE":"#ff3355"}.get(heis["estado_actual"],"#aaaaaa")
+                st.markdown(f"""
+                <div class="metric-card" style="border-left:3px solid {e_col}">
+                    <div class="metric-label">Estado de Incertidumbre</div>
+                    <div class="metric-value" style="color:{e_col};font-size:0.9rem">{heis['estado_actual']}</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Confianza Operativa</div>
+                    <div class="metric-value">{heis['confianza']}%</div>
+                    <div class="score-bar-wrap"><div class="score-bar" style="width:{heis['confianza']}%;background:{e_col}"></div></div>
+                    <div style="color:#2a4060;font-size:0.72rem">Mayor confianza = mejor momento para operar</div>
+                </div>""", unsafe_allow_html=True)
+                n_tuneles = int(heis["tunel"].sum())
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Túneles Cuánticos Detectados</div>
+                    <div class="metric-value" style="color:#ffdd44">{n_tuneles}</div>
+                    <div style="color:#2a4060;font-size:0.72rem">Breakouts estadísticos reales en zona predecible</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">ℏ Mercado (constante)</div>
+                    <div class="metric-value">{heis['hbar_mkt']:.6f}</div>
+                    <div style="color:#2a4060;font-size:0.72rem">Incertidumbre mínima histórica del activo</div>
+                </div>""", unsafe_allow_html=True)
+
+    # ── MÓDULO 3: KALMAN ─────────────────────────────────────
+    if mod_kalman:
+        with st.expander("📡  MÓDULO 3 — Filtro de Kalman  (Precio Real sin Ruido)", expanded=True):
+            st.markdown("""
+            <div class="quantum-card">
+            <div class="quantum-title">Filtro de Kalman — Ecuaciones de Riccati</div>
+            Estima el <b>precio real subyacente</b> eliminando el ruido de mercado.
+            <br>Modelo de estado: <b>x_t = [precio_real, velocidad]</b>
+            <br>La <b>ganancia de Kalman K</b> balancea observación vs predicción de forma óptima.
+            <br>Cuando precio cruza la línea Kalman = señal de tendencia real.
+            </div>""", unsafe_allow_html=True)
+
+            with st.spinner("Ejecutando filtro de Kalman..."):
+                kal = kalman_filter(prices_arr)
+
+            c1k, c2k = st.columns([2, 1])
+            with c1k:
+                fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, facecolor="#050810")
+                fig.subplots_adjust(hspace=0.1)
+                n = len(prices_arr)
+                axes[0].plot(prices_arr, color="#1a3060", lw=1, alpha=0.7, label="Precio obs.")
+                axes[0].plot(kal["precio_kalman"], color="#00aaff", lw=2, label="Kalman (precio real)")
+                axes[0].fill_between(range(n), kal["banda_sup"], kal["banda_inf"],
+                                     alpha=0.15, color="#0044ff", label="Banda 2σ Kalman")
+                axes[0].plot(kal["banda_sup"], color="#224488", lw=0.8, ls="--")
+                axes[0].plot(kal["banda_inf"], color="#224488", lw=0.8, ls="--")
+                # Cruces precio vs Kalman
+                diff = prices_arr - kal["precio_kalman"]
+                cruce_up   = np.where((diff[1:]>0)  & (diff[:-1]<=0))[0]+1
+                cruce_down = np.where((diff[1:]<0)  & (diff[:-1]>=0))[0]+1
+                if len(cruce_up):
+                    axes[0].scatter(cruce_up, prices_arr[cruce_up],
+                                    color="#00ff88", s=50, zorder=5, marker="^", label="Cruce ↑ (compra)")
+                if len(cruce_down):
+                    axes[0].scatter(cruce_down, prices_arr[cruce_down],
+                                    color="#ff3355", s=50, zorder=5, marker="v", label="Cruce ↓ (venta)")
+                axes[0].legend(fontsize=7, framealpha=0.3, loc="upper left")
+                axes[0].set_title("Precio Filtrado por Kalman + Señales de Cruce", color="#4488ff", fontsize=9)
+                # Velocidad de Kalman
+                vel = kal["velocidad"]
+                cv_kal = ["#00ff88" if v > 0 else "#ff3355" for v in vel]
+                axes[1].bar(range(n), vel, color=cv_kal, alpha=0.7, width=0.8)
+                axes[1].axhline(0, color="#2a4060", lw=1, ls=":")
+                axes[1].set_title("Velocidad del Precio (Kalman d[precio]/dt)", color="#4488ff", fontsize=9)
+                for ax in axes:
+                    ax.set_facecolor("#050810"); ax.tick_params(colors="#2a4060")
+                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
+                st.pyplot(fig)
+
+            with c2k:
+                t_color={"ALCISTA ↑":"#00ff88","BAJISTA ↓":"#ff3355","LATERAL →":"#ffaa00"}.get(kal["tendencia"],"#aaaaaa")
+                st.markdown(f"""
+                <div class="metric-card" style="border-left:3px solid {t_color}">
+                    <div class="metric-label">Tendencia Kalman</div>
+                    <div class="metric-value" style="color:{t_color}">{kal['tendencia']}</div>
+                </div>""", unsafe_allow_html=True)
+                diff_c = kal["diff_pct"]
+                diff_col = "#00ff88" if diff_c > 0 else "#ff3355"
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Precio vs Kalman</div>
+                    <div class="metric-value" style="color:{diff_col}">{diff_c:+.2f}%</div>
+                    <div style="color:#2a4060;font-size:0.72rem">{'Precio sobre línea → alcista' if diff_c>0 else 'Precio bajo línea → bajista'}</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Velocidad actual</div>
+                    <div class="metric-value" style="color:{t_color}">{kal['vel_actual']:+.6f}</div>
+                    <div style="color:#2a4060;font-size:0.72rem">d[precio]/dt estimado</div>
+                </div>""", unsafe_allow_html=True)
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Cruces detectados</div>
+                    <div style="color:#00ff88;font-size:0.85rem">▲ Alcistas: {len(cruce_up)}</div>
+                    <div style="color:#ff3355;font-size:0.85rem">▼ Bajistas: {len(cruce_down)}</div>
+                </div>""", unsafe_allow_html=True)
+
+    # ── MÓDULO 4: ENTRELAZAMIENTO ────────────────────────────
+    if mod_entang:
+        with st.expander("🔗  MÓDULO 4 — Entrelazamiento Cuántico de Activos", expanded=True):
+            st.markdown("""
+            <div class="quantum-card">
+            <div class="quantum-title">Entropía de Von Neumann — S = −Tr(ρ ln ρ)</div>
+            Calcula la <b>correlación cuántica</b> entre este activo y los mercados globales.
+            <br><b>S≈0</b> → activo altamente entrelazado (se mueve con el mercado).
+            <b>S grande</b> → activo independiente.
+            <br>Un <b>espejo cuántico</b> (ρ≈−1) puede usarse como <i>cobertura natural</i>.
+            </div>""", unsafe_allow_html=True)
+
+            with st.spinner("Calculando entrelazamiento con mercados globales..."):
+                ent = quantum_entanglement(df_raw, ticker_final)
+
+            if ent is None:
+                st.info("No se pudieron obtener suficientes activos de referencia para calcular el entrelazamiento.")
+            else:
+                c1e, c2e = st.columns([2, 1])
+                with c1e:
+                    fig, axes = plt.subplots(1, 2, figsize=(12, 5), facecolor="#050810")
+                    # Heatmap de correlaciones
+                    ax = axes[0]; ax.set_facecolor("#050810")
+                    nombres = ent["nombres"]; C = ent["C_matrix"]
+                    cmap = LinearSegmentedColormap.from_list("q", ["#ff3355","#050810","#00ff88"])
+                    im = ax.imshow(C, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+                    ax.set_xticks(range(len(nombres))); ax.set_yticks(range(len(nombres)))
+                    ax.set_xticklabels(nombres, rotation=45, ha="right", fontsize=7, color="#4a6080")
+                    ax.set_yticklabels(nombres, fontsize=7, color="#4a6080")
+                    plt.colorbar(im, ax=ax, shrink=0.8)
+                    ax.set_title("Matriz de Densidad ρ\n(Entrelazamiento)", color="#4488ff", fontsize=9)
+                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
+                    # Barras de correlación
+                    ax2 = axes[1]; ax2.set_facecolor("#050810")
+                    corrs = [ent["correlaciones"][nm]["corr"] for nm in nombres]
+                    bar_colors = []
+                    for co in corrs:
+                        if co > 0.4:   bar_colors.append("#00ff88")
+                        elif co < -0.4: bar_colors.append("#ff3355")
+                        else:           bar_colors.append("#4488ff")
+                    bars = ax2.barh(nombres, corrs, color=bar_colors, alpha=0.8, height=0.6)
+                    ax2.axvline(0, color="#2a4060", lw=1)
+                    ax2.axvline(0.7, color="#00ff88", lw=0.7, ls="--", alpha=0.5)
+                    ax2.axvline(-0.7, color="#ff3355", lw=0.7, ls="--", alpha=0.5)
+                    ax2.set_xlim(-1, 1)
+                    ax2.set_title(f"Correlación con {ticker_nombre}", color="#4488ff", fontsize=9)
+                    ax2.tick_params(colors="#2a4060", labelsize=8)
+                    [sp.set_color("#0d1a2e") for sp in ax2.spines.values()]
+                    # Añadir valores
+                    for bar, co in zip(bars, corrs):
+                        ax2.text(co + (0.03 if co >= 0 else -0.03), bar.get_y() + bar.get_height()/2,
+                                 f"{co:.2f}", va="center", ha="left" if co >= 0 else "right",
+                                 color="white", fontsize=8)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+
+                with c2e:
+                    svn_pct = ent["S_norm"] * 100
+                    svn_col = "#00ff88" if svn_pct < 30 else ("#ffaa00" if svn_pct < 60 else "#ff3355")
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <div class="metric-label">Entropía de Von Neumann</div>
+                        <div class="metric-value" style="color:{svn_col}">{ent['S_vn']:.3f}</div>
+                        <div class="score-bar-wrap"><div class="score-bar" style="width:{svn_pct:.0f}%;background:{svn_col}"></div></div>
+                        <div style="color:#2a4060;font-size:0.72rem">{'Alta independencia' if svn_pct>60 else ('Entrelazado con mercado' if svn_pct<30 else 'Correlación moderada')}</div>
+                    </div>""", unsafe_allow_html=True)
+
+                    st.markdown("**Estado de entrelazamiento:**")
+                    for nm, data in ent["correlaciones"].items():
+                        tipo, color = data["tipo"]
+                        co = data["corr"]
+                        st.markdown(f"""
+                        <div class="metric-card" style="padding:8px 12px;border-left:3px solid {color}">
+                            <div style="font-size:0.78rem;color:#c0d0e0;font-family:'Share Tech Mono',monospace">{nm}</div>
+                            <div style="display:flex;justify-content:space-between">
+                                <span style="color:{color};font-size:0.75rem">{tipo}</span>
+                                <span style="color:#4a6080;font-size:0.75rem">ρ={co:.2f}</span>
+                            </div>
+                        </div>""", unsafe_allow_html=True)
+
+    # ── TABLA INDICADORES ────────────────────────────────────
+    with st.expander("📊 Tabla de indicadores completa"):
+        def fv(v,d=4): return f"{v:.{d}f}" if not pd.isna(v) else "N/D"
         tabla = {
-            "Indicador": ["RSI(14)","MACD","MACD Signal","MACD Hist",
-                          "BB Superior","BB Medio","BB Inferior","BB %B",
-                          "ATR(14)","ATR %","EMA9","EMA21","EMA50","EMA200",
-                          "StochRSI K","StochRSI D","Vol Ratio","Momentum 5p"],
-            "Valor": [
-                fv(rsi_v,1), fv(macd_v,6), fv(msig_v,6), fv(mhist_v,6),
-                fv(bb_u,4), fv(bb_m,4), fv(bb_l,4), fv(ind["bb_pct"].iloc[-1],3),
-                fv(atr_v,6), f"{fv(atr_pct,2)}%",
-                fv(e9,4), fv(e21,4), fv(e50,4), fv(e200,4),
-                fv(sk,1), fv(sd,1), f"{fv(vr,2)}x", f"{fv(mom,2)}%"
-            ],
-            "Interpretación": [
-                "Sobrevendido<30, Sobrecomprado>70",
-                "Positivo = impulso alcista",
-                "MACD > Signal = alcista",
-                "Histograma > 0 = momentum alcista",
-                "Resistencia dinámica",
-                "Media móvil 20",
-                "Soporte dinámico",
-                "<0.2 sobrevendido, >0.8 sobrecomprado",
-                "Volatilidad absoluta promedio",
-                "% volatilidad relativa al precio",
-                "Promedio corto plazo",
-                "Promedio medio plazo",
-                "Promedio largo plazo",
-                "Tendencia anual",
-                "< 20 zona compra, > 80 zona venta",
-                "Confirmación del K",
-                "> 1.5x = volumen significativo",
-                "Retorno últimos 5 períodos"
+            "Indicador":["RSI(14)","MACD","MACD Hist","BB %B","ATR %","EMA9","EMA21","EMA50","StochRSI K","Vol Ratio","Momentum 5p"],
+            "Valor":[
+                fv(ind["rsi"].iloc[-1],1), fv(ind["macd"].iloc[-1],6), fv(ind["macd_hist"].iloc[-1],6),
+                fv(ind["bb_pct"].iloc[-1],3), f"{fv(ind['atr_pct'].iloc[-1],2)}%",
+                fv(ind["ema9"].iloc[-1],4), fv(ind["ema21"].iloc[-1],4), fv(ind["ema50"].iloc[-1],4),
+                fv(ind["stoch_k"].iloc[-1],1), f"{fv(ind['vol_ratio'].iloc[-1],2)}x",
+                f"{fv(ind['momentum'].iloc[-1],2)}%"
             ]
         }
         st.dataframe(pd.DataFrame(tabla), use_container_width=True, hide_index=True)
-
-    # ══════════════════════════════════════════════════════════
-    #  GLOSARIO HMM
-    # ══════════════════════════════════════════════════════════
-    if hmm_ok:
-        with st.expander("🤖 Estados del modelo HMM detectados"):
-            for i in range(best_model.n_components):
-                lm = labels_map[i]
-                trans = best_model.transmat_[i, i] * 100
-                st.markdown(
-                    f"**{lm['emoji']} Estado {i} — {lm['nombre']}** "
-                    f"· Acción sugerida: *{lm['señal']}* "
-                    f"· Prob. permanencia: **{trans:.0f}%**"
-                )
