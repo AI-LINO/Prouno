@@ -4,3 +4,4 @@ hmmlearn
 pandas
 numpy
 matplotlib
+scipy
