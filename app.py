@@ -1,3 +1,4 @@
+%%writefile app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -751,7 +752,7 @@ if ejecutar:
         ax4.axhline(0,color="#1a2a4a",lw=0.5,ls=":")
         ax4.legend(loc="upper left",fontsize=7,framealpha=0.3)
         ax4.tick_params(colors="#2a4060",labelrotation=30,labelsize=7); ax4.set_ylabel("MACD",color="#2a4060",fontsize=8)
-        st.pyplot(fig)
+        st.pyplot(fig); plt.close(fig)
 
     with col_pn:
         st.markdown(f'<div class="signal-box {cls}"><div style="font-size:1.05rem;font-weight:700;margin-bottom:6px">{señal}</div><div style="font-size:0.77rem;opacity:0.8">{desc}</div></div>',unsafe_allow_html=True)
@@ -793,69 +794,39 @@ if ejecutar:
             with st.spinner("Resolviendo ecuación de Schrödinger..."):
                 qho = quantum_harmonic_oscillator(prices_arr)
 
-            c1q, c2q = st.columns([2, 1])
-            with c1q:
-                fig, axes = plt.subplots(1, 2, figsize=(12, 5), facecolor="#050810")
-                # Panel izquierdo: precio + niveles cuánticos
-                ax = axes[0]; ax.set_facecolor("#050810")
-                ax.plot(prices_arr, color="#4488ff", lw=1.2, alpha=0.9, label="Precio")
-                colors_levels = ["#00ff88","#44aaff","#ffaa00","#ff8844","#ff3355"]
-                for i,(up,down) in enumerate(zip(qho["price_levels_up"], qho["price_levels_down"])):
-                    if up <= prices_arr.max()*1.2 and up > 0:
-                        ax.axhline(up,   color=colors_levels[i], lw=1, ls="--", alpha=0.8,
-                                   label=f"E{i+1}↑ {fp(up)}")
-                    if down > 0 and down >= prices_arr.min()*0.8:
-                        ax.axhline(down, color=colors_levels[i], lw=1, ls=":", alpha=0.6,
-                                   label=f"E{i+1}↓ {fp(down)}")
-                ax.legend(fontsize=7, framealpha=0.3, loc="upper left")
-                ax.set_title("Niveles de Energía Cuántica\n(Soportes/Resistencias)", color="#4488ff", fontsize=10)
-                ax.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
-                # Panel derecho: función de onda ψ²
-                ax2 = axes[1]; ax2.set_facecolor("#050810")
-                # Gradiente de color para la función de onda
-                ax2.fill_betweenx(qho["x_grid"] * qho["sigma"] + qho["mu"],
-                                  0, qho["psi_sq"],
-                                  alpha=0.4, color="#4488ff")
-                ax2.plot(qho["psi_sq"], qho["x_grid"] * qho["sigma"] + qho["mu"],
-                         color="#00aaff", lw=2)
-                ax2.axhline(prices_arr[-1], color="#ffdd44", lw=1.5, ls="--",
-                            label=f"Precio actual: {fp(prices_arr[-1])}")
-                ax2.axhline(qho["mu"], color="#00ff88", lw=1, ls=":",
-                            label=f"Equilibrio: {fp(qho['mu'])}")
-                ax2.legend(fontsize=7, framealpha=0.3)
-                ax2.set_title("|ψ|² — Densidad de Probabilidad\nde Precio Futuro", color="#4488ff", fontsize=10)
-                ax2.set_xlabel("Probabilidad", color="#2a4060", fontsize=8)
-                ax2.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax2.spines.values()]
-                plt.tight_layout()
-                st.pyplot(fig)
-
-            with c2q:
-                zona_color = {"REBOTE CUÁNTICO":"#00ff88","EQUILIBRIO":"#4488ff","TRANSICIÓN":"#ffaa00"}.get(qho["zona"],"#aaaaaa")
-                st.markdown(f"""
-                <div class="metric-card" style="border-left:3px solid {zona_color}">
-                    <div class="metric-label">Zona Cuántica Actual</div>
-                    <div class="metric-value" style="color:{zona_color};font-size:1rem">{qho['zona']}</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Frecuencia Natural ω</div>
-                    <div class="metric-value">{qho['omega']:.4f} rad/período</div>
-                    <div style="color:#2a4060;font-size:0.72rem">Ciclo dominante detectado por FFT</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Energía Potencial Actual</div>
-                    <div class="metric-value">{qho['V_current']:.4f} u.c.</div>
-                    <div style="color:#2a4060;font-size:0.72rem">½ω²x² — posición en el pozo</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown("**Niveles de soporte/resistencia:**")
-                for i,(up,down) in enumerate(zip(qho["price_levels_up"][:4],qho["price_levels_down"][:4])):
-                    st.markdown(f"""
-                    <div style="display:flex;gap:8px;margin:3px 0;font-family:'Share Tech Mono',monospace;font-size:0.78rem">
-                        <span style="color:#2a4060">E{i+1}</span>
-                        <span style="color:#00ff88">↑ {fp(up)}</span>
-                        <span style="color:#ff3355">↓ {fp(down)}</span>
-                    </div>""", unsafe_allow_html=True)
+            # Gráfico ancho (sin st.columns alrededor — evita bug NULL)
+            fig_m1, axes_m1 = plt.subplots(1, 2, figsize=(14, 5), facecolor="#050810")
+            ax_m1a = axes_m1[0]; ax_m1a.set_facecolor("#050810")
+            ax_m1a.plot(prices_arr, color="#4488ff", lw=1.2, alpha=0.9, label="Precio")
+            clev = ["#00ff88","#44aaff","#ffaa00","#ff8844","#ff3355"]
+            for i,(up,down) in enumerate(zip(qho["price_levels_up"], qho["price_levels_down"])):
+                if up <= prices_arr.max()*1.2 and up > 0:
+                    ax_m1a.axhline(up,   color=clev[i], lw=1, ls="--", alpha=0.8, label=f"E{i+1}↑ {fp(up)}")
+                if down > 0 and down >= prices_arr.min()*0.8:
+                    ax_m1a.axhline(down, color=clev[i], lw=1, ls=":",  alpha=0.6, label=f"E{i+1}↓ {fp(down)}")
+            ax_m1a.legend(fontsize=7, framealpha=0.3, loc="upper left")
+            ax_m1a.set_title("Niveles de Energía Cuántica — Soportes/Resistencias", color="#4488ff", fontsize=10)
+            ax_m1a.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax_m1a.spines.values()]
+            ax_m1b = axes_m1[1]; ax_m1b.set_facecolor("#050810")
+            ax_m1b.fill_betweenx(qho["x_grid"]*qho["sigma"]+qho["mu"], 0, qho["psi_sq"], alpha=0.4, color="#4488ff")
+            ax_m1b.plot(qho["psi_sq"], qho["x_grid"]*qho["sigma"]+qho["mu"], color="#00aaff", lw=2)
+            ax_m1b.axhline(prices_arr[-1], color="#ffdd44", lw=1.5, ls="--", label=f"Precio: {fp(prices_arr[-1])}")
+            ax_m1b.axhline(qho["mu"],      color="#00ff88", lw=1,   ls=":",  label=f"Equilibrio: {fp(qho['mu'])}")
+            ax_m1b.legend(fontsize=7, framealpha=0.3)
+            ax_m1b.set_title("|ψ|² — Densidad de Probabilidad de Precio Futuro", color="#4488ff", fontsize=10)
+            ax_m1b.set_xlabel("Probabilidad", color="#2a4060", fontsize=8)
+            ax_m1b.tick_params(colors="#2a4060"); [sp.set_color("#0d1a2e") for sp in ax_m1b.spines.values()]
+            plt.tight_layout()
+            st.pyplot(fig_m1); plt.close(fig_m1)
+            # Métricas en fila debajo
+            zona_color = {"REBOTE CUÁNTICO":"#00ff88","EQUILIBRIO":"#4488ff","TRANSICIÓN":"#ffaa00"}.get(qho["zona"],"#aaaaaa")
+            mq1,mq2,mq3,mq4,mq5,mq6 = st.columns(6)
+            mq1.markdown(f'<div class="metric-card" style="border-left:3px solid {zona_color}"><div class="metric-label">Zona Cuántica</div><div class="metric-value" style="color:{zona_color};font-size:0.88rem">{qho["zona"]}</div></div>', unsafe_allow_html=True)
+            mq2.markdown(f'<div class="metric-card"><div class="metric-label">ω (FFT)</div><div class="metric-value">{qho["omega"]:.4f}</div><div style="color:#2a4060;font-size:0.7rem">rad/período</div></div>', unsafe_allow_html=True)
+            mq3.markdown(f'<div class="metric-card"><div class="metric-label">Energía V(x)</div><div class="metric-value">{qho["V_current"]:.4f}</div><div style="color:#2a4060;font-size:0.7rem">½ω²x²</div></div>', unsafe_allow_html=True)
+            nivel_cols = [mq4, mq5, mq6]
+            for i,(up,down) in enumerate(zip(qho["price_levels_up"][:3],qho["price_levels_down"][:3])):
+                nivel_cols[i].markdown(f'<div class="metric-card"><div class="metric-label">E{i+1}</div><div style="color:#00ff88;font-size:0.82rem">↑ {fp(up)}</div><div style="color:#ff3355;font-size:0.82rem">↓ {fp(down)}</div></div>', unsafe_allow_html=True)
 
     # ── MÓDULO 2: HEISENBERG ─────────────────────────────────
     if mod_heisen:
@@ -872,70 +843,36 @@ if ejecutar:
             with st.spinner("Calculando principio de incertidumbre..."):
                 heis = heisenberg_uncertainty(prices_arr)
 
-            c1h, c2h = st.columns([2, 1])
-            with c1h:
-                fig, axes = plt.subplots(3, 1, figsize=(12, 8), sharex=True, facecolor="#050810")
-                fig.subplots_adjust(hspace=0.1)
-                n = len(prices_arr)
-                x = range(n)
-                axes[0].plot(prices_arr, color="#4488ff", lw=1.2, label="Precio")
-                # Marcar túneles cuánticos
-                tunel_idx = np.where(heis["tunel"].values)[0]
-                if len(tunel_idx):
-                    axes[0].scatter(tunel_idx, prices_arr[tunel_idx],
-                                    color="#ffdd44", s=40, zorder=5, label="⚡ Túnel Cuántico")
-                axes[0].legend(fontsize=7, framealpha=0.3)
-                axes[0].set_title("Precio + Breakouts por Túnel Cuántico", color="#4488ff", fontsize=9)
-                # Incertidumbre de posición Δx
-                axes[1].fill_between(x, heis["delta_x"].values, alpha=0.4, color="#ff8844")
-                axes[1].plot(heis["delta_x"].values, color="#ff8844", lw=1.2, label="Δx (precio)")
-                axes[1].set_ylabel("Δx", color="#2a4060", fontsize=8)
-                axes[1].set_title("Incertidumbre de Posición Δx", color="#ff8844", fontsize=9)
-                # Producto de incertidumbre U
-                u_vals = heis["U_norm"].values
-                colors_u = []
-                for uv in u_vals:
-                    if pd.isna(uv): colors_u.append("#2a4060")
-                    elif uv < 0.7:  colors_u.append("#00ff88")
-                    elif uv < 1.3:  colors_u.append("#ffaa00")
-                    else:           colors_u.append("#ff3355")
-                axes[2].bar(x, np.nan_to_num(u_vals), color=colors_u, alpha=0.8, width=0.8)
-                axes[2].axhline(1.0, color="#ffaa00", lw=1, ls="--", alpha=0.7, label="ℏ_mercado")
-                axes[2].legend(fontsize=7, framealpha=0.3)
-                axes[2].set_title("Producto de Incertidumbre U (verde=predecible)", color="#4488ff", fontsize=9)
-                for ax in axes:
-                    ax.set_facecolor("#050810"); ax.tick_params(colors="#2a4060")
-                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
-                st.pyplot(fig)
-
-            with c2h:
-                e_col={"BAJA INCERTIDUMBRE":"#00ff88","INCERTIDUMBRE NORMAL":"#ffaa00","ALTA INCERTIDUMBRE":"#ff3355"}.get(heis["estado_actual"],"#aaaaaa")
-                st.markdown(f"""
-                <div class="metric-card" style="border-left:3px solid {e_col}">
-                    <div class="metric-label">Estado de Incertidumbre</div>
-                    <div class="metric-value" style="color:{e_col};font-size:0.9rem">{heis['estado_actual']}</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Confianza Operativa</div>
-                    <div class="metric-value">{heis['confianza']}%</div>
-                    <div class="score-bar-wrap"><div class="score-bar" style="width:{heis['confianza']}%;background:{e_col}"></div></div>
-                    <div style="color:#2a4060;font-size:0.72rem">Mayor confianza = mejor momento para operar</div>
-                </div>""", unsafe_allow_html=True)
-                n_tuneles = int(heis["tunel"].sum())
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Túneles Cuánticos Detectados</div>
-                    <div class="metric-value" style="color:#ffdd44">{n_tuneles}</div>
-                    <div style="color:#2a4060;font-size:0.72rem">Breakouts estadísticos reales en zona predecible</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">ℏ Mercado (constante)</div>
-                    <div class="metric-value">{heis['hbar_mkt']:.6f}</div>
-                    <div style="color:#2a4060;font-size:0.72rem">Incertidumbre mínima histórica del activo</div>
-                </div>""", unsafe_allow_html=True)
-
+            # Gráfico ancho M2 (sin columns)
+            fig_m2, axes_m2 = plt.subplots(3, 1, figsize=(13, 8), sharex=True, facecolor="#050810")
+            fig_m2.subplots_adjust(hspace=0.12)
+            n_h = len(prices_arr)
+            axes_m2[0].plot(prices_arr, color="#4488ff", lw=1.2, label="Precio")
+            tunel_idx = np.where(heis["tunel"].values)[0]
+            if len(tunel_idx):
+                axes_m2[0].scatter(tunel_idx, prices_arr[tunel_idx], color="#ffdd44", s=40, zorder=5, label="⚡ Túnel Cuántico")
+            axes_m2[0].legend(fontsize=7, framealpha=0.3)
+            axes_m2[0].set_title("Precio + Breakouts por Túnel Cuántico", color="#4488ff", fontsize=9)
+            axes_m2[1].fill_between(range(n_h), heis["delta_x"].values, alpha=0.4, color="#ff8844")
+            axes_m2[1].plot(heis["delta_x"].values, color="#ff8844", lw=1.2, label="Δx")
+            axes_m2[1].set_title("Incertidumbre de Posición Δx", color="#ff8844", fontsize=9)
+            u_vals = heis["U_norm"].values
+            cu = ["#00ff88" if not pd.isna(v) and v<0.7 else ("#ffaa00" if not pd.isna(v) and v<1.3 else "#ff3355") for v in u_vals]
+            axes_m2[2].bar(range(n_h), np.nan_to_num(u_vals), color=cu, alpha=0.8, width=0.8)
+            axes_m2[2].axhline(1.0, color="#ffaa00", lw=1, ls="--", alpha=0.7, label="ℏ_mercado")
+            axes_m2[2].legend(fontsize=7, framealpha=0.3)
+            axes_m2[2].set_title("Producto U (verde=predecible, rojo=caótico)", color="#4488ff", fontsize=9)
+            for ax_h in axes_m2:
+                ax_h.set_facecolor("#050810"); ax_h.tick_params(colors="#2a4060")
+                [sp.set_color("#0d1a2e") for sp in ax_h.spines.values()]
+            st.pyplot(fig_m2); plt.close(fig_m2)
+            # Métricas en fila
+            e_col = {"BAJA INCERTIDUMBRE":"#00ff88","INCERTIDUMBRE NORMAL":"#ffaa00","ALTA INCERTIDUMBRE":"#ff3355"}.get(heis["estado_actual"],"#aaa")
+            mh1,mh2,mh3,mh4 = st.columns(4)
+            mh1.markdown(f'<div class="metric-card" style="border-left:3px solid {e_col}"><div class="metric-label">Estado Heisenberg</div><div class="metric-value" style="color:{e_col};font-size:0.85rem">{heis["estado_actual"]}</div></div>', unsafe_allow_html=True)
+            mh2.markdown(f'<div class="metric-card"><div class="metric-label">Confianza Operativa</div><div class="metric-value">{heis["confianza"]}%</div><div class="score-bar-wrap"><div class="score-bar" style="width:{heis["confianza"]}%;background:{e_col}"></div></div></div>', unsafe_allow_html=True)
+            mh3.markdown(f'<div class="metric-card"><div class="metric-label">Túneles Cuánticos</div><div class="metric-value" style="color:#ffdd44">{int(heis["tunel"].sum())}</div><div style="color:#2a4060;font-size:0.7rem">Breakouts reales</div></div>', unsafe_allow_html=True)
+            mh4.markdown(f'<div class="metric-card"><div class="metric-label">ℏ Mercado</div><div class="metric-value">{heis["hbar_mkt"]:.6f}</div><div style="color:#2a4060;font-size:0.7rem">Constante empírica</div></div>', unsafe_allow_html=True)
     # ── MÓDULO 3: KALMAN ─────────────────────────────────────
     if mod_kalman:
         with st.expander("📡  MÓDULO 3 — Filtro de Kalman  (Precio Real sin Ruido)", expanded=True):
@@ -951,68 +888,41 @@ if ejecutar:
             with st.spinner("Ejecutando filtro de Kalman..."):
                 kal = kalman_filter(prices_arr)
 
-            c1k, c2k = st.columns([2, 1])
-            with c1k:
-                fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True, facecolor="#050810")
-                fig.subplots_adjust(hspace=0.1)
-                n = len(prices_arr)
-                axes[0].plot(prices_arr, color="#1a3060", lw=1, alpha=0.7, label="Precio obs.")
-                axes[0].plot(kal["precio_kalman"], color="#00aaff", lw=2, label="Kalman (precio real)")
-                axes[0].fill_between(range(n), kal["banda_sup"], kal["banda_inf"],
-                                     alpha=0.15, color="#0044ff", label="Banda 2σ Kalman")
-                axes[0].plot(kal["banda_sup"], color="#224488", lw=0.8, ls="--")
-                axes[0].plot(kal["banda_inf"], color="#224488", lw=0.8, ls="--")
-                # Cruces precio vs Kalman
-                diff = prices_arr - kal["precio_kalman"]
-                cruce_up   = np.where((diff[1:]>0)  & (diff[:-1]<=0))[0]+1
-                cruce_down = np.where((diff[1:]<0)  & (diff[:-1]>=0))[0]+1
-                if len(cruce_up):
-                    axes[0].scatter(cruce_up, prices_arr[cruce_up],
-                                    color="#00ff88", s=50, zorder=5, marker="^", label="Cruce ↑ (compra)")
-                if len(cruce_down):
-                    axes[0].scatter(cruce_down, prices_arr[cruce_down],
-                                    color="#ff3355", s=50, zorder=5, marker="v", label="Cruce ↓ (venta)")
-                axes[0].legend(fontsize=7, framealpha=0.3, loc="upper left")
-                axes[0].set_title("Precio Filtrado por Kalman + Señales de Cruce", color="#4488ff", fontsize=9)
-                # Velocidad de Kalman
-                vel = kal["velocidad"]
-                cv_kal = ["#00ff88" if v > 0 else "#ff3355" for v in vel]
-                axes[1].bar(range(n), vel, color=cv_kal, alpha=0.7, width=0.8)
-                axes[1].axhline(0, color="#2a4060", lw=1, ls=":")
-                axes[1].set_title("Velocidad del Precio (Kalman d[precio]/dt)", color="#4488ff", fontsize=9)
-                for ax in axes:
-                    ax.set_facecolor("#050810"); ax.tick_params(colors="#2a4060")
-                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
-                st.pyplot(fig)
-
-            with c2k:
-                t_color={"ALCISTA ↑":"#00ff88","BAJISTA ↓":"#ff3355","LATERAL →":"#ffaa00"}.get(kal["tendencia"],"#aaaaaa")
-                st.markdown(f"""
-                <div class="metric-card" style="border-left:3px solid {t_color}">
-                    <div class="metric-label">Tendencia Kalman</div>
-                    <div class="metric-value" style="color:{t_color}">{kal['tendencia']}</div>
-                </div>""", unsafe_allow_html=True)
-                diff_c = kal["diff_pct"]
-                diff_col = "#00ff88" if diff_c > 0 else "#ff3355"
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Precio vs Kalman</div>
-                    <div class="metric-value" style="color:{diff_col}">{diff_c:+.2f}%</div>
-                    <div style="color:#2a4060;font-size:0.72rem">{'Precio sobre línea → alcista' if diff_c>0 else 'Precio bajo línea → bajista'}</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Velocidad actual</div>
-                    <div class="metric-value" style="color:{t_color}">{kal['vel_actual']:+.6f}</div>
-                    <div style="color:#2a4060;font-size:0.72rem">d[precio]/dt estimado</div>
-                </div>""", unsafe_allow_html=True)
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Cruces detectados</div>
-                    <div style="color:#00ff88;font-size:0.85rem">▲ Alcistas: {len(cruce_up)}</div>
-                    <div style="color:#ff3355;font-size:0.85rem">▼ Bajistas: {len(cruce_down)}</div>
-                </div>""", unsafe_allow_html=True)
-
+            # Gráfico ancho M3 (sin columns)
+            diff_k = prices_arr - kal["precio_kalman"]
+            cruce_up   = np.where((diff_k[1:]>0)  & (diff_k[:-1]<=0))[0]+1
+            cruce_down = np.where((diff_k[1:]<0)  & (diff_k[:-1]>=0))[0]+1
+            fig_m3, axes_m3 = plt.subplots(2, 1, figsize=(13, 7), sharex=True, facecolor="#050810")
+            fig_m3.subplots_adjust(hspace=0.1)
+            n_k = len(prices_arr)
+            axes_m3[0].plot(prices_arr, color="#1a3060", lw=1, alpha=0.7, label="Precio obs.")
+            axes_m3[0].plot(kal["precio_kalman"], color="#00aaff", lw=2, label="Kalman (precio real)")
+            axes_m3[0].fill_between(range(n_k), kal["banda_sup"], kal["banda_inf"], alpha=0.15, color="#0044ff", label="Banda 2σ")
+            axes_m3[0].plot(kal["banda_sup"], color="#224488", lw=0.8, ls="--")
+            axes_m3[0].plot(kal["banda_inf"], color="#224488", lw=0.8, ls="--")
+            if len(cruce_up):
+                axes_m3[0].scatter(cruce_up,   prices_arr[cruce_up],   color="#00ff88", s=50, zorder=5, marker="^", label="Cruce ↑ compra")
+            if len(cruce_down):
+                axes_m3[0].scatter(cruce_down, prices_arr[cruce_down], color="#ff3355", s=50, zorder=5, marker="v", label="Cruce ↓ venta")
+            axes_m3[0].legend(fontsize=7, framealpha=0.3, loc="upper left")
+            axes_m3[0].set_title("Precio Filtrado por Kalman + Señales de Cruce", color="#4488ff", fontsize=9)
+            vel_k = kal["velocidad"]
+            cv_k = ["#00ff88" if v>0 else "#ff3355" for v in vel_k]
+            axes_m3[1].bar(range(n_k), vel_k, color=cv_k, alpha=0.7, width=0.8)
+            axes_m3[1].axhline(0, color="#2a4060", lw=1, ls=":")
+            axes_m3[1].set_title("Velocidad del Precio d[precio]/dt (Kalman)", color="#4488ff", fontsize=9)
+            for ax_k in axes_m3:
+                ax_k.set_facecolor("#050810"); ax_k.tick_params(colors="#2a4060")
+                [sp.set_color("#0d1a2e") for sp in ax_k.spines.values()]
+            st.pyplot(fig_m3); plt.close(fig_m3)
+            # Métricas en fila
+            t_col = {"ALCISTA ↑":"#00ff88","BAJISTA ↓":"#ff3355","LATERAL →":"#ffaa00"}.get(kal["tendencia"],"#aaa")
+            mk1,mk2,mk3,mk4 = st.columns(4)
+            mk1.markdown(f'<div class="metric-card" style="border-left:3px solid {t_col}"><div class="metric-label">Tendencia Kalman</div><div class="metric-value" style="color:{t_col}">{kal["tendencia"]}</div></div>', unsafe_allow_html=True)
+            diff_c=kal["diff_pct"]; dc_col="#00ff88" if diff_c>0 else "#ff3355"
+            mk2.markdown(f'<div class="metric-card"><div class="metric-label">Precio vs Kalman</div><div class="metric-value" style="color:{dc_col}">{diff_c:+.2f}%</div><div style="color:#2a4060;font-size:0.7rem">{"Sobre línea → alcista" if diff_c>0 else "Bajo línea → bajista"}</div></div>', unsafe_allow_html=True)
+            mk3.markdown(f'<div class="metric-card"><div class="metric-label">Velocidad actual</div><div class="metric-value" style="color:{t_col}">{kal["vel_actual"]:+.6f}</div></div>', unsafe_allow_html=True)
+            mk4.markdown(f'<div class="metric-card"><div class="metric-label">Cruces</div><div style="color:#00ff88;font-size:0.85rem">▲ Alcistas: {len(cruce_up)}</div><div style="color:#ff3355;font-size:0.85rem">▼ Bajistas: {len(cruce_down)}</div></div>', unsafe_allow_html=True)
     # ── MÓDULO 4: ENTRELAZAMIENTO ────────────────────────────
     if mod_entang:
         with st.expander("🔗  MÓDULO 4 — Entrelazamiento Cuántico de Activos", expanded=True):
@@ -1031,68 +941,45 @@ if ejecutar:
             if ent is None:
                 st.info("No se pudieron obtener suficientes activos de referencia para calcular el entrelazamiento.")
             else:
-                c1e, c2e = st.columns([2, 1])
-                with c1e:
-                    fig, axes = plt.subplots(1, 2, figsize=(12, 5), facecolor="#050810")
-                    # Heatmap de correlaciones
-                    ax = axes[0]; ax.set_facecolor("#050810")
-                    nombres = ent["nombres"]; C = ent["C_matrix"]
-                    cmap = LinearSegmentedColormap.from_list("q", ["#ff3355","#050810","#00ff88"])
-                    im = ax.imshow(C, cmap=cmap, vmin=0, vmax=1, aspect="auto")
-                    ax.set_xticks(range(len(nombres))); ax.set_yticks(range(len(nombres)))
-                    ax.set_xticklabels(nombres, rotation=45, ha="right", fontsize=7, color="#4a6080")
-                    ax.set_yticklabels(nombres, fontsize=7, color="#4a6080")
-                    plt.colorbar(im, ax=ax, shrink=0.8)
-                    ax.set_title("Matriz de Densidad ρ\n(Entrelazamiento)", color="#4488ff", fontsize=9)
-                    [sp.set_color("#0d1a2e") for sp in ax.spines.values()]
-                    # Barras de correlación
-                    ax2 = axes[1]; ax2.set_facecolor("#050810")
-                    corrs = [ent["correlaciones"][nm]["corr"] for nm in nombres]
-                    bar_colors = []
-                    for co in corrs:
-                        if co > 0.4:   bar_colors.append("#00ff88")
-                        elif co < -0.4: bar_colors.append("#ff3355")
-                        else:           bar_colors.append("#4488ff")
-                    bars = ax2.barh(nombres, corrs, color=bar_colors, alpha=0.8, height=0.6)
-                    ax2.axvline(0, color="#2a4060", lw=1)
-                    ax2.axvline(0.7, color="#00ff88", lw=0.7, ls="--", alpha=0.5)
-                    ax2.axvline(-0.7, color="#ff3355", lw=0.7, ls="--", alpha=0.5)
-                    ax2.set_xlim(-1, 1)
-                    ax2.set_title(f"Correlación con {ticker_nombre}", color="#4488ff", fontsize=9)
-                    ax2.tick_params(colors="#2a4060", labelsize=8)
-                    [sp.set_color("#0d1a2e") for sp in ax2.spines.values()]
-                    # Añadir valores
-                    for bar, co in zip(bars, corrs):
-                        ax2.text(co + (0.03 if co >= 0 else -0.03), bar.get_y() + bar.get_height()/2,
-                                 f"{co:.2f}", va="center", ha="left" if co >= 0 else "right",
-                                 color="white", fontsize=8)
-                    plt.tight_layout()
-                    st.pyplot(fig)
-
-                with c2e:
-                    svn_pct = ent["S_norm"] * 100
-                    svn_col = "#00ff88" if svn_pct < 30 else ("#ffaa00" if svn_pct < 60 else "#ff3355")
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <div class="metric-label">Entropía de Von Neumann</div>
-                        <div class="metric-value" style="color:{svn_col}">{ent['S_vn']:.3f}</div>
-                        <div class="score-bar-wrap"><div class="score-bar" style="width:{svn_pct:.0f}%;background:{svn_col}"></div></div>
-                        <div style="color:#2a4060;font-size:0.72rem">{'Alta independencia' if svn_pct>60 else ('Entrelazado con mercado' if svn_pct<30 else 'Correlación moderada')}</div>
-                    </div>""", unsafe_allow_html=True)
-
-                    st.markdown("**Estado de entrelazamiento:**")
-                    for nm, data in ent["correlaciones"].items():
-                        tipo, color = data["tipo"]
-                        co = data["corr"]
-                        st.markdown(f"""
-                        <div class="metric-card" style="padding:8px 12px;border-left:3px solid {color}">
-                            <div style="font-size:0.78rem;color:#c0d0e0;font-family:'Share Tech Mono',monospace">{nm}</div>
-                            <div style="display:flex;justify-content:space-between">
-                                <span style="color:{color};font-size:0.75rem">{tipo}</span>
-                                <span style="color:#4a6080;font-size:0.75rem">ρ={co:.2f}</span>
-                            </div>
-                        </div>""", unsafe_allow_html=True)
-
+                # Gráfico ancho M4 (sin columns)
+                fig_m4, axes_m4 = plt.subplots(1, 2, figsize=(13, 5), facecolor="#050810")
+                nombres_e = ent["nombres"]; C_e = ent["C_matrix"]
+                ax_e1 = axes_m4[0]; ax_e1.set_facecolor("#050810")
+                cmap_e = LinearSegmentedColormap.from_list("q", ["#ff3355","#050810","#00ff88"])
+                im_e = ax_e1.imshow(C_e, cmap=cmap_e, vmin=0, vmax=1, aspect="auto")
+                ax_e1.set_xticks(range(len(nombres_e))); ax_e1.set_yticks(range(len(nombres_e)))
+                ax_e1.set_xticklabels(nombres_e, rotation=45, ha="right", fontsize=7, color="#4a6080")
+                ax_e1.set_yticklabels(nombres_e, fontsize=7, color="#4a6080")
+                plt.colorbar(im_e, ax=ax_e1, shrink=0.8)
+                ax_e1.set_title("Matriz de Densidad ρ — Entrelazamiento", color="#4488ff", fontsize=9)
+                [sp.set_color("#0d1a2e") for sp in ax_e1.spines.values()]
+                ax_e2 = axes_m4[1]; ax_e2.set_facecolor("#050810")
+                corrs_e = [ent["correlaciones"][nm]["corr"] for nm in nombres_e]
+                bar_ce  = ["#00ff88" if c>0.4 else("#ff3355" if c<-0.4 else "#4488ff") for c in corrs_e]
+                bars_e  = ax_e2.barh(nombres_e, corrs_e, color=bar_ce, alpha=0.8, height=0.6)
+                ax_e2.axvline(0,    color="#2a4060", lw=1)
+                ax_e2.axvline(0.7,  color="#00ff88", lw=0.7, ls="--", alpha=0.5)
+                ax_e2.axvline(-0.7, color="#ff3355", lw=0.7, ls="--", alpha=0.5)
+                ax_e2.set_xlim(-1, 1)
+                ax_e2.set_title(f"Correlación con {ticker_nombre}", color="#4488ff", fontsize=9)
+                ax_e2.tick_params(colors="#2a4060", labelsize=8)
+                [sp.set_color("#0d1a2e") for sp in ax_e2.spines.values()]
+                for bar_e, co_e in zip(bars_e, corrs_e):
+                    ax_e2.text(co_e+(0.03 if co_e>=0 else -0.03), bar_e.get_y()+bar_e.get_height()/2,
+                               f"{co_e:.2f}", va="center", ha="left" if co_e>=0 else "right", color="white", fontsize=8)
+                plt.tight_layout()
+                st.pyplot(fig_m4); plt.close(fig_m4)
+                # Métricas Von Neumann + tabla de correlaciones
+                svn_pct = ent["S_norm"]*100
+                svn_col = "#00ff88" if svn_pct<30 else ("#ffaa00" if svn_pct<60 else "#ff3355")
+                me1, me2 = st.columns([1,2])
+                with me1:
+                    st.markdown(f'<div class="metric-card"><div class="metric-label">Entropía Von Neumann</div><div class="metric-value" style="color:{svn_col}">{ent["S_vn"]:.3f}</div><div class="score-bar-wrap"><div class="score-bar" style="width:{svn_pct:.0f}%;background:{svn_col}"></div></div><div style="color:#2a4060;font-size:0.7rem">{"Alta independencia" if svn_pct>60 else ("Entrelazado" if svn_pct<30 else "Correlación moderada")}</div></div>', unsafe_allow_html=True)
+                with me2:
+                    for nm_e, dat_e in ent["correlaciones"].items():
+                        tipo_e, col_e = dat_e["tipo"]
+                        co_e = dat_e["corr"]
+                        st.markdown(f'<div class="metric-card" style="padding:6px 12px;border-left:3px solid {col_e}"><div style="display:flex;justify-content:space-between;font-size:0.78rem"><span style="color:#c0d0e0">{nm_e}</span><span style="color:{col_e}">{tipo_e}  ρ={co_e:.2f}</span></div></div>', unsafe_allow_html=True)
     # ── TABLA INDICADORES ────────────────────────────────────
     with st.expander("📊 Tabla de indicadores completa"):
         def fv(v,d=4): return f"{v:.{d}f}" if not pd.isna(v) else "N/D"
