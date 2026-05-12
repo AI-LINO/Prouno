@@ -3,7 +3,7 @@
 # ║  Filtro Tendencia · Entradas Precisas · Trailing · MTF     ║
 # ║  Backtesting · Confluence Score · HMM 5D                   ║
 # ╚══════════════════════════════════════════════════════════════╝
-import streamlit as st
+1import streamlit as st
 import numpy as np
 import pandas as pd
 import yfinance as yf
