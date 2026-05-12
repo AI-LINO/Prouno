@@ -1,4 +1,3 @@
-%%writefile app.py
 # ╔══════════════════════════════════════════════════════════════╗
 # ║          AI.LINO QUANTUM ENGINE v4.0                        ║
 # ║  Filtro Tendencia · Entradas Precisas · Trailing · MTF     ║
@@ -1170,3 +1169,263 @@ if ejecutar:
                          f"{fv(ind['chg1'].iloc[-1],2)}%",f"{fv(ind['chg3'].iloc[-1],2)}%",
                          tend_info["tendencia"],mtf_info.get("tendencia","N/D")]}
         st.dataframe(pd.DataFrame(t_data),use_container_width=True,hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════
+#  🔭 SCANNER DE CRIPTOS — Encuentra las mejores entradas
+# ══════════════════════════════════════════════════════════════
+def scanner_score_rapido(df):
+    """Score rápido para el scanner — sin HMM para velocidad."""
+    if df is None or df.empty or len(df) < 25:
+        return None
+    try:
+        ind = calcular_indicadores(df)
+        rsi  = ind["rsi"].iloc[-1]
+        hist = ind["macd_hist"].iloc[-1]
+        prev = ind["macd_hist"].iloc[-2] if len(ind["macd_hist"]) > 1 else hist
+        pct  = ind["bb_pct"].iloc[-1]
+        e9   = ind["ema9"].iloc[-1]; e21 = ind["ema21"].iloc[-1]; e50 = ind["ema50"].iloc[-1]
+        vr   = ind["vol_ratio"].iloc[-1]
+        sk   = ind["stoch_k"].iloc[-1]
+        atr  = ind["atr_pct"].iloc[-1]
+        chg1 = ind["chg1"].iloc[-1]
+
+        if any(pd.isna(v) for v in [rsi, hist, pct, e9, e21]): return None
+
+        score = 0
+        # RSI
+        if rsi < 30: score += 25
+        elif rsi < 45: score += 16
+        elif rsi < 55: score += 8
+        elif rsi > 70: score -= 10
+        # MACD cruce
+        if not pd.isna(prev):
+            if prev <= 0 and hist > 0: score += 22
+            elif hist > 0 and hist > prev: score += 14
+            elif hist > 0: score += 7
+            elif prev >= 0 and hist < 0: score -= 15
+        # BB posición
+        if pct < 0.1: score += 15
+        elif pct < 0.3: score += 9
+        elif pct > 0.9: score -= 10
+        # EMAs
+        if not pd.isna(e50):
+            if e9 > e21 > e50: score += 18
+            elif e9 > e21: score += 10
+            else: score -= 5
+        # Volumen
+        if not pd.isna(vr):
+            if vr > 2: score += 10
+            elif vr > 1.3: score += 5
+        # StochRSI
+        if not pd.isna(sk):
+            if sk < 20: score += 10
+            elif sk > 80: score -= 8
+
+        precio = df["Close"].iloc[-1]
+        return {
+            "score": int(np.clip(score, 0, 100)),
+            "rsi": round(rsi, 1),
+            "macd_cruce": (not pd.isna(prev) and prev <= 0 and hist > 0),
+            "bb_pct": round(pct, 3),
+            "vol_ratio": round(vr, 2) if not pd.isna(vr) else 0,
+            "precio": precio,
+            "chg1": round(chg1, 2) if not pd.isna(chg1) else 0,
+            "atr_pct": round(atr, 2) if not pd.isna(atr) else 0,
+            "ema_ok": (e9 > e21),
+        }
+    except:
+        return None
+
+
+# Lista de pares para escanear
+SCAN_PARES_BINANCE = [
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT",
+    "ADAUSDT","AVAXUSDT","DOTUSDT","MATICUSDT","LINKUSDT","LTCUSDT",
+    "UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT",
+    "INJUSDT","SUIUSDT","SEIUSDT","TIAUSDT","WIFUSDT","PEPEUSDT",
+    "FLOKIUSDT","BONKUSDT","FETUSDT","RENDERUSDT","IMXUSDT","GMXUSDT",
+]
+
+SCAN_PARES_YAHOO = [
+    "NVDA","AAPL","TSLA","AMD","META","MSFT","AMZN","GOOGL",
+    "SPY","QQQ","ARKK","COIN","MSTR","RIOT","MARA",
+]
+
+
+def ejecutar_scanner(pares, fuente_scan, interval_scan, dias_scan, progreso_bar):
+    resultados = []
+    total = len(pares)
+    for i, sym in enumerate(pares):
+        progreso_bar.progress((i + 1) / total, text=f"Escaneando {sym}...")
+        try:
+            if fuente_scan == "binance":
+                df_s = binance_descargar(sym, interval_scan, dias_scan)
+            else:
+                pm = {10: "1mo", 30: "1mo", 90: "3mo"}
+                df_s = yahoo_descargar(sym, "1d", dias_scan)
+
+            res = scanner_score_rapido(df_s)
+            if res and res["score"] >= 35:
+                res["symbol"] = sym
+                res["fuente"] = fuente_scan
+                resultados.append(res)
+        except:
+            pass
+        time.sleep(0.05)  # evitar rate limit
+
+    resultados.sort(key=lambda x: x["score"], reverse=True)
+    return resultados
+
+
+# ── UI del Scanner ─────────────────────────────────────────
+st.sidebar.divider()
+st.sidebar.markdown("**🔭 SCANNER**")
+run_scanner = st.sidebar.button("🔭 ESCANEAR CRIPTOS", use_container_width=True)
+
+if run_scanner:
+    st.divider()
+    st.markdown("## 🔭 SCANNER DE OPORTUNIDADES")
+    st.caption("Analiza los principales pares con los mismos algoritmos del motor principal.")
+
+    tab_bn, tab_yf = st.tabs(["🟡 Binance (Crypto)", "📈 Acciones (Yahoo)"])
+
+    with tab_bn:
+        sc1, sc2, sc3 = st.columns(3)
+        with sc1:
+            tf_scan = st.selectbox("Timeframe scanner:",
+                                   ["1h · 3d", "4h · 10d", "1d · 30d", "1d · 90d"],
+                                   key="tf_scan_bn")
+        with sc2:
+            min_score = st.slider("Score mínimo:", 40, 85, 55, key="ms_bn")
+        with sc3:
+            top_n = st.slider("Top N resultados:", 5, 30, 10, key="topn_bn")
+
+        tf_map_scan = {
+            "1h · 3d":  ("1h",  3),
+            "4h · 10d": ("4h", 10),
+            "1d · 30d": ("1d", 30),
+            "1d · 90d": ("1d", 90),
+        }
+        iv_s, d_s = tf_map_scan[tf_scan]
+
+        prog = st.progress(0, text="Iniciando scanner...")
+        with st.spinner("Escaneando mercado cripto..."):
+            res_bn = ejecutar_scanner(SCAN_PARES_BINANCE, "binance", iv_s, d_s, prog)
+        prog.empty()
+
+        res_bn_f = [r for r in res_bn if r["score"] >= min_score][:top_n]
+
+        if not res_bn_f:
+            st.info("No se encontraron oportunidades con ese score mínimo. Baja el filtro.")
+        else:
+            st.markdown(f"**{len(res_bn_f)} oportunidades encontradas:**")
+
+            # Gráfico de barras de scores
+            fig_sc = plt.figure(figsize=(14, 4), facecolor=BG)
+            ax_sc = fig_sc.add_subplot(1, 1, 1); estilizar_ax(ax_sc)
+            syms_sc  = [r["symbol"] for r in res_bn_f]
+            scores_sc = [r["score"] for r in res_bn_f]
+            cols_sc  = ["#00ff88" if s >= 70 else ("#ffaa00" if s >= 55 else "#4488ff") for s in scores_sc]
+            bars_sc  = ax_sc.bar(syms_sc, scores_sc, color=cols_sc, alpha=0.85, width=0.6)
+            for bar, sc_v in zip(bars_sc, scores_sc):
+                ax_sc.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                           f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
+            ax_sc.axhline(70, color="#00ff88", lw=1, ls="--", alpha=0.6, label="Zona compra")
+            ax_sc.axhline(55, color="#ffaa00", lw=1, ls="--", alpha=0.5, label="Vigilar")
+            ax_sc.set_ylim(0, 105)
+            ax_sc.set_title("Score por Par — Scanner Cuántico", color="#4488ff", fontsize=10)
+            ax_sc.legend(fontsize=7, framealpha=0.3)
+            ax_sc.tick_params(axis="x", labelrotation=30, labelsize=8, colors="#4a6080")
+            plt.tight_layout(); render_fig(fig_sc)
+
+            # Tabla detallada
+            rows = []
+            for r in res_bn_f:
+                pf = r["precio"]
+                precio_fmt = f"${pf:,.6f}" if pf < 1 else f"${pf:,.4f}" if pf < 10 else f"${pf:,.2f}"
+                score_emoji = "🟢" if r["score"] >= 70 else ("🟡" if r["score"] >= 55 else "🔵")
+                rows.append({
+                    "Par":        r["symbol"],
+                    "Score":      f"{score_emoji} {r['score']}/100",
+                    "Precio":     precio_fmt,
+                    "Chg 1p":     f"{r['chg1']:+.2f}%",
+                    "RSI":        r["rsi"],
+                    "BB %B":      r["bb_pct"],
+                    "Vol Ratio":  f"{r['vol_ratio']}x",
+                    "ATR%":       f"{r['atr_pct']}%",
+                    "MACD Cruce": "✅" if r["macd_cruce"] else "—",
+                    "EMA OK":     "✅" if r["ema_ok"] else "—",
+                })
+            df_tabla = pd.DataFrame(rows)
+            st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+
+            # Cards de las top 3
+            st.markdown("**🏆 Top 3 mejores entradas:**")
+            top3_cols = st.columns(3)
+            for i, r in enumerate(res_bn_f[:3]):
+                pf = r["precio"]
+                precio_fmt = f"${pf:,.6f}" if pf < 1 else f"${pf:,.4f}" if pf < 10 else f"${pf:,.2f}"
+                sc_c = "#00ff88" if r["score"] >= 70 else "#ffaa00"
+                indicadores_str = []
+                if r["macd_cruce"]: indicadores_str.append("MACD✅")
+                if r["rsi"] < 35:   indicadores_str.append(f"RSI({r['rsi']}✅)")
+                if r["bb_pct"] < 0.2: indicadores_str.append("BB✅")
+                if r["ema_ok"]:     indicadores_str.append("EMA✅")
+                if r["vol_ratio"] > 1.5: indicadores_str.append(f"Vol({r['vol_ratio']}x✅)")
+                top3_cols[i].markdown(f"""
+                <div class="mc" style="border-left:3px solid {sc_c};padding:12px">
+                    <div style="font-family:'Orbitron',monospace;font-size:1rem;color:{sc_c};font-weight:700">{r['symbol']}</div>
+                    <div class="mv" style="color:{sc_c};font-size:1.4rem">{r['score']}/100</div>
+                    <div style="color:#c0d8ff;font-size:0.82rem;margin:4px 0">{precio_fmt} <span style="color:{'#00ff88' if r['chg1']>0 else '#ff3355'}">{r['chg1']:+.2f}%</span></div>
+                    <div style="color:#4a6080;font-size:0.72rem">{' · '.join(indicadores_str) if indicadores_str else 'Señal técnica'}</div>
+                </div>""", unsafe_allow_html=True)
+
+    with tab_yf:
+        sc1y, sc2y = st.columns(2)
+        with sc1y:
+            min_score_y = st.slider("Score mínimo:", 40, 85, 55, key="ms_yf")
+        with sc2y:
+            top_n_y = st.slider("Top N:", 5, 15, 8, key="topn_yf")
+
+        prog_y = st.progress(0, text="Iniciando scanner acciones...")
+        with st.spinner("Escaneando acciones..."):
+            res_yf_scan = ejecutar_scanner(SCAN_PARES_YAHOO, "yahoo", "1d", 90, prog_y)
+        prog_y.empty()
+
+        res_yf_f = [r for r in res_yf_scan if r["score"] >= min_score_y][:top_n_y]
+
+        if not res_yf_f:
+            st.info("No se encontraron oportunidades. Baja el filtro.")
+        else:
+            st.markdown(f"**{len(res_yf_f)} oportunidades encontradas:**")
+
+            fig_scy = plt.figure(figsize=(14, 4), facecolor=BG)
+            ax_scy = fig_scy.add_subplot(1, 1, 1); estilizar_ax(ax_scy)
+            syms_y  = [r["symbol"] for r in res_yf_f]
+            scrs_y  = [r["score"]  for r in res_yf_f]
+            cols_y  = ["#00ff88" if s >= 70 else ("#ffaa00" if s >= 55 else "#4488ff") for s in scrs_y]
+            bars_y  = ax_scy.bar(syms_y, scrs_y, color=cols_y, alpha=0.85, width=0.5)
+            for bar, sc_v in zip(bars_y, scrs_y):
+                ax_scy.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                            f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
+            ax_scy.axhline(70, color="#00ff88", lw=1, ls="--", alpha=0.6)
+            ax_scy.set_ylim(0, 105)
+            ax_scy.set_title("Score Acciones — Scanner", color="#4488ff", fontsize=10)
+            ax_scy.tick_params(axis="x", labelsize=9, colors="#4a6080")
+            plt.tight_layout(); render_fig(fig_scy)
+
+            rows_y = []
+            for r in res_yf_f:
+                pf = r["precio"]
+                rows_y.append({
+                    "Ticker":     r["symbol"],
+                    "Score":      f"{'🟢' if r['score']>=70 else '🟡'} {r['score']}/100",
+                    "Precio":     f"${pf:,.2f}",
+                    "Chg 1p":     f"{r['chg1']:+.2f}%",
+                    "RSI":        r["rsi"],
+                    "BB %B":      r["bb_pct"],
+                    "Vol Ratio":  f"{r['vol_ratio']}x",
+                    "MACD Cruce": "✅" if r["macd_cruce"] else "—",
+                })
+            st.dataframe(pd.DataFrame(rows_y), use_container_width=True, hide_index=True)
