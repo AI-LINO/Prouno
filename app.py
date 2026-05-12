@@ -1174,489 +1174,773 @@ if ejecutar:
 # ══════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════
-# 🚀 SCANNER DE DESPEGUE — Detecta criptos que ACABAN de iniciar
-#    un impulso sólido, no las que ya subieron.
+
+# ══════════════════════════════════════════════════════════════
+# 🏆 SCANNER DE SUBIDAS SOSTENIDAS (Wyckoff + Smart Money)
 #
-#  CRITERIOS DE DESPEGUE SÓLIDO (todos deben cumplirse):
-#  1. MACD: cruce alcista MUY reciente (últimas 1-3 velas)
-#  2. Volumen: spike 1.8x+ sobre promedio en el momento del cruce
-#  3. RSI: saliendo de sobreventa (28-55) — no sobrecomprado aún
-#  4. Precio: acaba de romper EMA21 desde abajo
-#  5. Estructura: mínimos crecientes en las últimas 8 velas (tendencia base)
-#  6. Kalman: velocidad positiva y acelerando (momentum real)
-#  7. Bollinger: precio en zona baja-media (< 0.55) — no extendido
-#  8. Fuerza: retorno acumulado últimas 3 velas > 0 pero < 8% (inicio, no final)
+# Filosofía: No buscamos el primer tick de subida.
+# Buscamos criptos con ESTRUCTURA SÓLIDA que garantizan
+# subidas de días/semanas, no de horas.
+#
+# MODELO DE 5 CAPAS:
+# L1 - Estructura Wyckoff    → ¿Hubo acumulación previa sólida?
+# L2 - Smart Money / Volumen → ¿Están entrando capitales reales?
+# L3 - Momentum Técnico      → ¿RSI/MACD/EMAs confirman?
+# L4 - Fuerza Relativa       → ¿Esta cripto es más fuerte que BTC?
+# L5 - Kalman Trend          → ¿La tendencia filtrada es alcista?
 # ══════════════════════════════════════════════════════════════
 
-# Lista amplia de pares Binance para escanear
-SCAN_PARES_BINANCE = [
-    # Top caps
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
-    "AVAXUSDT","DOTUSDT","LINKUSDT","LTCUSDT","ATOMUSDT","NEARUSDT",
-    # Mid caps con alta volatilidad (despegues más explosivos)
-    "INJUSDT","SUIUSDT","APTUSDT","ARBUSDT","OPUSDT","SEIUSDT",
-    "TIAUSDT","FETUSDT","RENDERUSDT","IMXUSDT","GMXUSDT","RUNEUSDT",
-    "JUPUSDT","WUSDT","STRKUSDT","DYMUSDT","ALTUSDT","MANTAUSDT",
-    "PIXELUSDT","PORTALUSDT","ACEUSDT","XAIUSDT","AIUSDT","AGIXUSDT",
-    # Memecoins con despegues rápidos
-    "DOGEUSDT","SHIBUSDT","PEPEUSDT","FLOKIUSDT","BONKUSDT","WIFUSDT",
-    "BOMEUSDT","MEWUSDT","NEIROUSDT","MOGUSDT",
+# Pares a escanear — priorizamos liquidez media-alta
+SCAN_PARES_SOSTENIDO = [
+    # Layer 1 / Infra
+    "SOLUSDT","AVAXUSDT","NEARUSDT","APTUSDT","SUIUSDT","INJUSDT",
+    "SEIUSDT","TIAUSDT","FETUSDT","RENDERUSDT","WLDUSDT",
     # DeFi
-    "UNIUSDT","AAVEUSDT","CRVUSDT","MKRUSDT","SNXUSDT","COMPUSDT",
-    # Layer 2 / Infra
-    "MATICUSDT","LRCUSDT","METISUSDT","SKLUSDT","CELRUSDT",
+    "UNIUSDT","AAVEUSDT","MKRUSDT","GMXUSDT","JUPUSDT","RUNEUSDT",
+    # Layer 2
+    "ARBUSDT","OPUSDT","IMXUSDT","STRKUSDT","METISUSDT",
+    # Ecosistemas fuertes
+    "LINKUSDT","DOTUSDT","ATOMUSDT","ADAUSDT","MATICUSDT",
+    # Narrativas AI/DePIN
+    "AGIXUSDT","RNDRУСDT","ARKMUSDT","TAOУСDT","AIUSDT",
+    # BTC ecosystem
+    "BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","LTCUSDT",
+    # Mid caps momentum
+    "DYMUSDT","ALTUSDT","MANTAUSDT","EIGENUSDT","STXUSDT",
+    "OMUSDT","ENAUSDT","PENDLEUSDT","PYTHUSDT","WUSDT",
 ]
 
-def analizar_despegue(df, sym):
+# Pares con errores frecuentes en Binance (excluir)
+EXCLUIR = {"RNDRУСDT","ТAOУСDT"}  # typos con caracteres cirílicos
+SCAN_PARES_SOSTENIDO = [p for p in SCAN_PARES_SOSTENIDO if p not in EXCLUIR and p.isascii()]
+
+
+def detectar_wyckoff_acumulacion(df):
     """
-    Análisis profundo de despegue. Retorna score 0-100 y diagnóstico.
-    Diseñado para encontrar el INICIO del impulso, no el final.
+    L1 — Detecta si hubo acumulación Wyckoff antes del movimiento actual.
+    Señales de acumulación:
+    - Precio lateral 10-40 velas con contracción de rango
+    - Volumen decreciente durante la lateral (spring)
+    - Mínimos que no bajan (soporte)
+    - Luego ruptura con volumen (Sign of Strength)
+    Retorna score 0-30 + descripción
+    """
+    if len(df) < 40:
+        return 0, "N/D"
+    c   = df["Close"].values
+    v   = df["Volume"].values
+    h   = df["High"].values
+    l   = df["Low"].values
+    n   = len(c)
+
+    score_w = 0
+    desc_w  = []
+
+    # Ventana de análisis: últimas 35 velas ANTES de las 5 más recientes
+    # (queremos ver si ANTES de la subida hubo base)
+    base_start = max(0, n - 40)
+    base_end   = max(5, n - 5)
+    base_c     = c[base_start:base_end]
+    base_v     = v[base_start:base_end]
+    base_h     = h[base_start:base_end]
+    base_l     = l[base_start:base_end]
+
+    if len(base_c) < 10:
+        return 0, "Pocos datos"
+
+    # ── Criterio 1: Rango de precios comprimido en la base ──
+    rango_base   = (np.max(base_h) - np.min(base_l)) / (np.mean(base_c) + 1e-10) * 100
+    rango_actual = (np.max(h[-10:]) - np.min(l[-10:])) / (np.mean(c[-10:]) + 1e-10) * 100
+
+    if rango_base < 15:
+        score_w += 10; desc_w.append("Consolidación estrecha")
+    elif rango_base < 25:
+        score_w += 6;  desc_w.append("Consolidación moderada")
+    else:
+        desc_w.append("Sin consolidación previa")
+
+    # ── Criterio 2: Volumen decreciente en la base (acumulación silenciosa) ──
+    if len(base_v) > 6:
+        vol_primera_mitad = np.mean(base_v[:len(base_v)//2])
+        vol_segunda_mitad = np.mean(base_v[len(base_v)//2:])
+        if vol_segunda_mitad < vol_primera_mitad * 0.85:
+            score_w += 8; desc_w.append("Vol. decreciente en base")
+        elif vol_segunda_mitad < vol_primera_mitad:
+            score_w += 4; desc_w.append("Vol. ligeramente bajo")
+
+    # ── Criterio 3: Mínimos que se sostienen (soporte firme) ──
+    lows_base = base_l[-10:]
+    if len(lows_base) > 3:
+        # Los últimos mínimos no deben caer más del 3% vs el primero
+        lows_drift = (np.min(lows_base[-5:]) - np.min(lows_base[:5])) / (np.min(lows_base[:5]) + 1e-10) * 100
+        if lows_drift > -3:
+            score_w += 7; desc_w.append("Soporte firme")
+        elif lows_drift > -8:
+            score_w += 3; desc_w.append("Soporte débil")
+
+    # ── Criterio 4: Sign of Strength — vela grande con volumen en ruptura ──
+    # La última vela grande alcista con volumen alto
+    recent_retorno = (c[-1] - c[-6]) / (c[-6] + 1e-10) * 100
+    vol_reciente   = np.mean(v[-3:]) / (np.mean(v[:-3]) + 1e-10)
+
+    if recent_retorno > 3 and vol_reciente > 1.5:
+        score_w += 5; desc_w.append("Sign of Strength ✅")
+    elif recent_retorno > 1.5 and vol_reciente > 1.2:
+        score_w += 2; desc_w.append("Ruptura moderada")
+
+    desc_final = " · ".join(desc_w) if desc_w else "Sin patrón claro"
+    return min(score_w, 30), desc_final
+
+
+def detectar_smart_money_volumen(df):
+    """
+    L2 — Smart Money y estructura de volumen.
+    Detecta si el volumen indica acumulación institucional:
+    - Climactic Volume: spike de vol en velas alcistas
+    - Volume Profile: dónde se concentra el volumen (soporte real)
+    - OBV (On Balance Volume): acumulación neta
+    - Volumen relativo creciente en tendencia (no pump & dump)
+    Retorna score 0-25 + señales
+    """
+    if len(df) < 20:
+        return 0, {}
+
+    c = df["Close"]; v = df["Volume"]; o = df["Open"]
+    score_sm = 0
+    señales  = {}
+
+    # ── OBV — On Balance Volume ──────────────────────────────
+    # Si OBV sube mientras precio sube = acumulación real
+    obv_delta = np.where(c.diff() > 0, v, np.where(c.diff() < 0, -v, 0))
+    obv       = pd.Series(obv_delta).cumsum()
+    # Pendiente OBV últimas 10 vs anteriores 10
+    obv_vals  = obv.values
+    if len(obv_vals) >= 20:
+        obv_trend_rec  = np.mean(np.diff(obv_vals[-10:]))
+        obv_trend_prev = np.mean(np.diff(obv_vals[-20:-10]))
+        if obv_trend_rec > 0 and obv_trend_rec > obv_trend_prev:
+            score_sm += 8; señales["OBV"] = ("🟢 ACUMULACIÓN", obv_trend_rec)
+        elif obv_trend_rec > 0:
+            score_sm += 4; señales["OBV"] = ("🟡 POSITIVO", obv_trend_rec)
+        else:
+            señales["OBV"] = ("🔴 DISTRIBUCIÓN", obv_trend_rec)
+
+    # ── Volume Delta — velas alcistas vs bajistas ────────────
+    # ¿El volumen es mayor en velas verdes que rojas?
+    es_alcista  = c >= o
+    vol_alcista = v[es_alcista].mean() if es_alcista.any() else 0
+    vol_bajista = v[~es_alcista].mean() if (~es_alcista).any() else 1
+    vol_delta_ratio = vol_alcista / (vol_bajista + 1e-10)
+
+    if vol_delta_ratio > 1.4:
+        score_sm += 8; señales["VOL_DELTA"] = ("🟢 COMPRADORES DOMINAN", round(vol_delta_ratio, 2))
+    elif vol_delta_ratio > 1.1:
+        score_sm += 4; señales["VOL_DELTA"] = ("🟡 LEVE DOMINIO COMPRA", round(vol_delta_ratio, 2))
+    else:
+        señales["VOL_DELTA"] = ("🔴 VENDEDORES DOMINAN", round(vol_delta_ratio, 2))
+
+    # ── Volumen creciente en tendencia (no flat) ─────────────
+    vol_sma_corto  = v.rolling(5).mean().iloc[-1]
+    vol_sma_largo  = v.rolling(20).mean().iloc[-1]
+    vol_tendencia  = vol_sma_corto / (vol_sma_largo + 1e-10)
+
+    if vol_tendencia > 1.5:
+        score_sm += 6; señales["VOL_TREND"] = ("🟢 ACELERANDO", round(vol_tendencia, 2))
+    elif vol_tendencia > 1.2:
+        score_sm += 3; señales["VOL_TREND"] = ("🟡 CRECIENDO", round(vol_tendencia, 2))
+    else:
+        señales["VOL_TREND"] = ("⚪ PLANO", round(vol_tendencia, 2))
+
+    # ── Climactic volume — spike en ruptura ──────────────────
+    vol_max_recent = v.iloc[-5:].max()
+    vol_avg_base   = v.iloc[-25:-5].mean()
+    climax_ratio   = vol_max_recent / (vol_avg_base + 1e-10)
+
+    if climax_ratio > 3:
+        score_sm += 3; señales["CLIMAX"] = ("🟢 CLIMAX ALCISTA", round(climax_ratio, 1))
+    elif climax_ratio > 2:
+        score_sm += 1; señales["CLIMAX"] = ("🟡 SPIKE VOL", round(climax_ratio, 1))
+    else:
+        señales["CLIMAX"] = ("⚪ SIN CLIMAX", round(climax_ratio, 1))
+
+    return min(score_sm, 25), señales
+
+
+def analizar_fuerza_relativa(df_sym, df_btc):
+    """
+    L4 — Fuerza Relativa vs BTC.
+    Una altcoin que sube más que BTC en el mismo período
+    indica capital rotando a ella (señal de fortaleza real).
+    Retorna score 0-15 + ratio
+    """
+    if df_btc is None or df_btc.empty or df_sym is None or df_sym.empty:
+        return 7, 1.0, "N/D"  # neutral
+
+    try:
+        ret_sym = (df_sym["Close"].iloc[-1] - df_sym["Close"].iloc[-10]) / (df_sym["Close"].iloc[-10] + 1e-10) * 100
+        ret_btc = (df_btc["Close"].iloc[-1] - df_btc["Close"].iloc[-10]) / (df_btc["Close"].iloc[-10] + 1e-10) * 100
+        rs      = ret_sym - ret_btc  # diferencial
+
+        if rs > 8:
+            return 15, rs, f"🟢 +{rs:.1f}% vs BTC (MUY FUERTE)"
+        elif rs > 3:
+            return 11, rs, f"🟢 +{rs:.1f}% vs BTC"
+        elif rs > 0:
+            return 7,  rs, f"🟡 +{rs:.1f}% vs BTC"
+        elif rs > -5:
+            return 4,  rs, f"🟡 {rs:.1f}% vs BTC"
+        else:
+            return 0,  rs, f"🔴 {rs:.1f}% vs BTC (DÉBIL)"
+    except:
+        return 7, 0, "N/D"
+
+
+def analizar_momentum_tecnico(df):
+    """
+    L3 — Momentum técnico completo.
+    Combina RSI, MACD, EMAs, StochRSI, Bollinger.
+    Prioriza señales de inicio de tendencia, no de sobrecompra.
+    Retorna score 0-20 + señales
+    """
+    if len(df) < 30:
+        return 0, {}
+
+    c = df["Close"]; score_m = 0; señales = {}
+
+    # EMAs
+    e9  = c.ewm(span=9,  adjust=False).mean()
+    e21 = c.ewm(span=21, adjust=False).mean()
+    e50 = c.ewm(span=50, adjust=False).mean()
+    e200= c.ewm(span=200,adjust=False).mean()
+
+    # RSI
+    d = c.diff()
+    g = d.clip(lower=0).ewm(com=13,adjust=False).mean()
+    l = (-d.clip(upper=0)).ewm(com=13,adjust=False).mean()
+    rsi = 100-(100/(1+g/(l+1e-10)))
+
+    # MACD
+    ef=c.ewm(span=12,adjust=False).mean(); es=c.ewm(span=26,adjust=False).mean()
+    mac=ef-es; sig=mac.ewm(span=9,adjust=False).mean(); hist=mac-sig
+
+    # Bollinger
+    bb_mid=c.rolling(20).mean(); bb_std=c.rolling(20).std()
+    bb_pct=(c-(bb_mid-2*bb_std))/(4*bb_std+1e-9)
+
+    # Valores actuales
+    rsi_v   = rsi.iloc[-1]; rsi_p  = rsi.iloc[-2]
+    hist_v  = hist.iloc[-1]; hist_p = hist.iloc[-2]
+    e9v=e9.iloc[-1]; e21v=e21.iloc[-1]; e50v=e50.iloc[-1]; e200v=e200.iloc[-1]
+    c_now   = c.iloc[-1]; bb_v = bb_pct.iloc[-1]
+
+    if any(pd.isna(x) for x in [rsi_v, hist_v, e9v]): return 0, {}
+
+    # RSI en zona correcta (sano, no sobrecomprado)
+    if 40 <= rsi_v <= 62 and rsi_v > rsi_p:
+        score_m += 6; señales["RSI"] = (f"🟢 SANO {rsi_v:.0f}↑", 6)
+    elif 35 <= rsi_v < 40:
+        score_m += 4; señales["RSI"] = (f"🟡 SALIENDO SV {rsi_v:.0f}", 4)
+    elif rsi_v > 70:
+        señales["RSI"] = (f"🔴 SC {rsi_v:.0f}", 0)
+    else:
+        score_m += 2; señales["RSI"] = (f"⚪ {rsi_v:.0f}", 2)
+
+    # MACD positivo y creciendo
+    if hist_v > 0 and hist_v > hist_p:
+        score_m += 6; señales["MACD"] = ("🟢 ACELERANDO", 6)
+    elif hist_v > 0:
+        score_m += 3; señales["MACD"] = ("🟡 POSITIVO", 3)
+    elif hist_p <= 0 and hist_v > 0:
+        score_m += 5; señales["MACD"] = ("🟢 CRUCE", 5)
+    else:
+        señales["MACD"] = ("🔴 NEGATIVO", 0)
+
+    # Alineación de EMAs
+    if e9v > e21v > e50v:
+        score_m += 5; señales["EMAs"] = ("🟢 ALINEADAS", 5)
+        if c_now > e200v:
+            score_m += 3; señales["EMA200"] = ("🟢 SOBRE EMA200", 3)
+    elif e9v > e21v:
+        score_m += 2; señales["EMAs"] = ("🟡 PARCIAL", 2)
+    else:
+        señales["EMAs"] = ("🔴 DESALINEADAS", 0)
+
+    return min(score_m, 20), señales
+
+
+def analizar_kalman_trend(df):
+    """
+    L5 — Filtro Kalman para detectar tendencia real sostenida.
+    Una tendencia Kalman que lleva varias velas al alza
+    indica movimiento genuino, no ruido.
+    Retorna score 0-10 + velocidad + aceleración
+    """
+    if len(df) < 20:
+        return 5, 0, 0
+
+    c  = df["Close"].values
+    # Proxy Kalman rápido con EWM
+    pk = pd.Series(c).ewm(span=6, adjust=False).mean().values
+    vel= np.diff(pk)
+    acc= np.diff(vel)
+
+    vel_actual = vel[-1]   if len(vel)>0   else 0
+    vel_media  = np.mean(vel[-5:])  if len(vel)>=5  else vel_actual
+    acc_actual = acc[-1]   if len(acc)>0   else 0
+
+    # Velas consecutivas con Kalman alcista
+    consec_al = 0
+    for v2 in reversed(vel[-8:]):
+        if v2 > 0: consec_al += 1
+        else: break
+
+    precio = c[-1]
+    vel_pct = vel_actual / (precio + 1e-10) * 100
+
+    if consec_al >= 5 and vel_media > 0 and acc_actual >= 0:
+        return 10, vel_pct, acc_actual
+    elif consec_al >= 3 and vel_media > 0:
+        return 7, vel_pct, acc_actual
+    elif consec_al >= 2:
+        return 4, vel_pct, acc_actual
+    elif vel_actual < 0:
+        return 0, vel_pct, acc_actual
+    else:
+        return 2, vel_pct, acc_actual
+
+
+@st.cache_data(ttl=300)
+def get_btc_data_scanner():
+    """BTC como referencia para fuerza relativa — cacheado 5 min."""
+    try:
+        df_b = binance_descargar("BTCUSDT", "1d", 30)
+        return df_b if not df_b.empty else None
+    except:
+        return None
+
+
+def analizar_subida_sostenida(df, sym, df_btc=None):
+    """
+    Motor principal: 5 capas de análisis.
+    Solo pasa el filtro si MÚLTIPLES capas confirman.
+    Diseñado para subidas de días/semanas, no horas.
     """
     if df is None or df.empty or len(df) < 35:
         return None
     try:
-        c   = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
-        n   = len(c)
+        # ── Ejecutar las 5 capas ─────────────────────────────
+        score_w, desc_w   = detectar_wyckoff_acumulacion(df)        # 0-30
+        score_sm, sel_sm  = detectar_smart_money_volumen(df)        # 0-25
+        score_mt, sel_mt  = analizar_momentum_tecnico(df)           # 0-20
+        score_fr, rs_val, desc_fr = analizar_fuerza_relativa(df, df_btc)  # 0-15
+        score_kl, vel_pct, acc    = analizar_kalman_trend(df)       # 0-10
 
-        # ── Indicadores base ────────────────────────────────
-        # EMA rápidas
-        e9  = c.ewm(span=9,  adjust=False).mean()
-        e21 = c.ewm(span=21, adjust=False).mean()
-        e50 = c.ewm(span=50, adjust=False).mean()
+        total_max   = 30 + 25 + 20 + 15 + 10  # = 100
+        score_raw   = score_w + score_sm + score_mt + score_fr + score_kl
+        score_final = int(round(score_raw / total_max * 100))
 
-        # MACD
-        ef  = c.ewm(span=12, adjust=False).mean()
-        es  = c.ewm(span=26, adjust=False).mean()
-        mac = ef - es
-        sig = mac.ewm(span=9, adjust=False).mean()
-        hist= mac - sig
+        # ── Filtro de calidad — Wyckoff + Smart Money obligatorios ──
+        # Una subida sin base de acumulación NO es sostenible
+        if score_w < 8:    score_final = min(score_final, 48)
+        if score_sm < 8:   score_final = min(score_final, 52)
 
-        # RSI rápido (EWM)
-        d   = c.diff()
-        g   = d.clip(lower=0).ewm(com=13, adjust=False).mean()
-        ls  = (-d.clip(upper=0)).ewm(com=13, adjust=False).mean()
-        rsi = 100 - (100/(1+g/(ls+1e-10)))
+        # ── Penalización por sobrecompra (ya subió demasiado) ──
+        c = df["Close"]
+        ret_10 = (c.iloc[-1] - c.iloc[-11]) / (c.iloc[-11] + 1e-10) * 100 if len(c) > 11 else 0
+        ret_3  = (c.iloc[-1] - c.iloc[-4])  / (c.iloc[-4]  + 1e-10) * 100 if len(c) > 4  else 0
 
-        # Volumen ratio
-        vol_sma = v.rolling(20).mean()
-        vol_r   = v / (vol_sma + 1e-10)
+        timing_ok = True
+        if ret_10 > 40:
+            score_final = min(score_final, 45)
+            timing_ok = False
+        elif ret_10 > 25:
+            score_final = max(0, score_final - 15)
 
-        # Bollinger
-        bb_mid = c.rolling(20).mean()
-        bb_std = c.rolling(20).std()
-        bb_up  = bb_mid + 2*bb_std
-        bb_lo  = bb_mid - 2*bb_std
-        bb_pct = (c - bb_lo)/(bb_up - bb_lo + 1e-9)
+        # ── Clasificación de calidad ─────────────────────────
+        capas_fuertes = sum([
+            score_w  >= 18,   # Wyckoff fuerte
+            score_sm >= 15,   # Smart money fuerte
+            score_mt >= 13,   # Momentum fuerte
+            score_fr >= 10,   # FR fuerte
+            score_kl >= 7,    # Kalman fuerte
+        ])
 
-        # ATR
-        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-        atr = tr.ewm(span=14, adjust=False).mean()
-
-        # Kalman velocidad (simplificado)
-        precio_k = c.ewm(span=5, adjust=False).mean()  # proxy Kalman
-        vel_k    = precio_k.diff()
-
-        # Valores actuales
-        rsi_now   = rsi.iloc[-1]
-        hist_now  = hist.iloc[-1]
-        hist_prev = hist.iloc[-2]
-        hist_prev2= hist.iloc[-3] if n > 3 else hist_prev
-        vol_now   = vol_r.iloc[-1]
-        bb_now    = bb_pct.iloc[-1]
-        e9_now    = e9.iloc[-1]; e21_now=e21.iloc[-1]; e50_now=e50.iloc[-1]
-        c_now     = c.iloc[-1];  c_prev  = c.iloc[-2]
-        vel_now   = vel_k.iloc[-1]; vel_prev=vel_k.iloc[-2]
-        atr_now   = atr.iloc[-1]
-
-        if any(pd.isna(v2) for v2 in [rsi_now,hist_now,hist_prev,bb_now,e9_now,e21_now]):
-            return None
-
-        # ════════════════════════════════════════════════════
-        #  CRITERIOS DE DESPEGUE — cada uno puntúa
-        # ════════════════════════════════════════════════════
-        criterios  = {}
-        score      = 0
-        penalizacion = 0
-
-        # ── C1: MACD Cruce alcista reciente (0-25 pts) ──────
-        cruce_hoy   = hist_prev <= 0 and hist_now > 0
-        cruce_ayer  = hist.iloc[-3] <= 0 and hist_prev > 0 if n > 3 else False
-        macd_acelerando = hist_now > hist_prev > hist_prev2
-
-        if cruce_hoy:
-            score += 25; criterios["MACD"] = ("🟢 CRUCE HOY", 25)
-        elif cruce_ayer and macd_acelerando:
-            score += 18; criterios["MACD"] = ("🟡 CRUCE AYER+ACCEL", 18)
-        elif macd_acelerando and hist_now > 0:
-            score += 10; criterios["MACD"] = ("🟡 ACELERANDO", 10)
-        elif hist_now <= 0:
-            penalizacion += 20; criterios["MACD"] = ("🔴 NEGATIVO", 0)
+        if score_final >= 75 and capas_fuertes >= 4:
+            calidad = "💎 SUBIDA EXCELENTE"
+            calidad_col = "#00ff88"
+            duracion_est = "Semanas"
+        elif score_final >= 62 and capas_fuertes >= 3:
+            calidad = "🚀 SUBIDA SÓLIDA"
+            calidad_col = "#44ffaa"
+            duracion_est = "Días-Semanas"
+        elif score_final >= 50 and capas_fuertes >= 2:
+            calidad = "⚡ SUBIDA PROBABLE"
+            calidad_col = "#ffaa00"
+            duracion_est = "Días"
+        elif score_final >= 38:
+            calidad = "👀 EN FORMACIÓN"
+            calidad_col = "#4488ff"
+            duracion_est = "Incierto"
         else:
-            criterios["MACD"] = ("⚪ POSITIVO", 5); score += 5
+            return None  # No clasificado
 
-        # ── C2: Volumen en el cruce (0-20 pts) ──────────────
-        # Buscar spike de volumen en las últimas 3 velas
-        vol_max3 = vol_r.iloc[-3:].max()
-        if not pd.isna(vol_now):
-            if vol_max3 > 2.5:
-                score += 20; criterios["VOL"] = (f"🟢 SPIKE {vol_max3:.1f}x", 20)
-            elif vol_max3 > 1.8:
-                score += 14; criterios["VOL"] = (f"🟡 ALTO {vol_max3:.1f}x", 14)
-            elif vol_max3 > 1.3:
-                score += 7;  criterios["VOL"] = (f"⚪ ELEVADO {vol_max3:.1f}x", 7)
-            else:
-                penalizacion += 10; criterios["VOL"] = (f"🔴 SECO {vol_max3:.1f}x", 0)
-        else:
-            criterios["VOL"] = ("⚪ N/D", 5); score += 5
+        # ── Niveles de entrada ───────────────────────────────
+        precio = c.iloc[-1]
+        h = df["High"]; l = df["Low"]
+        tr = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = tr.ewm(span=14,adjust=False).mean().iloc[-1]
+        if pd.isna(atr) or atr == 0: atr = precio * 0.02
 
-        # ── C3: RSI — zona correcta (0-15 pts) ──────────────
-        # Queremos RSI saliendo de sobreventa, no sobrecomprado
-        if 25 <= rsi_now <= 48:
-            score += 15; criterios["RSI"] = (f"🟢 SALIENDO SV {rsi_now:.0f}", 15)
-        elif 48 < rsi_now <= 58:
-            score += 10; criterios["RSI"] = (f"🟡 ZONA MEDIA {rsi_now:.0f}", 10)
-        elif rsi_now < 25:
-            score += 8;  criterios["RSI"] = (f"🟡 MUY BAJO {rsi_now:.0f}", 8)
-        elif rsi_now > 70:
-            penalizacion += 15; criterios["RSI"] = (f"🔴 SOBRECOMPRADO {rsi_now:.0f}", 0)
-        else:
-            score += 4;  criterios["RSI"] = (f"⚪ ALTO {rsi_now:.0f}", 4)
+        entry = precio
+        sl    = precio - 1.5*atr
+        tp1   = precio + 2.5*atr
+        tp2   = precio + 5.0*atr
+        tp3   = precio + 8.0*atr   # objetivo extendido para subidas de semanas
+        rr    = (tp1-entry)/(entry-sl+1e-10)
 
-        # ── C4: Ruptura EMA21 desde abajo (0-15 pts) ────────
-        cruzando_e21 = (c_prev <= e21.iloc[-2]) and (c_now > e21_now)
-        sobre_e21    = c_now > e21_now
-        e21_gap      = (c_now - e21_now) / (e21_now+1e-10) * 100
-
-        if cruzando_e21:
-            score += 15; criterios["EMA21"] = (f"🟢 ROMPE EMA21 HOY", 15)
-        elif sobre_e21 and e21_gap < 3.0:
-            score += 10; criterios["EMA21"] = (f"🟡 SOBRE EMA21 +{e21_gap:.1f}%", 10)
-        elif sobre_e21 and e21_gap < 8.0:
-            score += 5;  criterios["EMA21"] = (f"⚪ SOBRE EMA21 +{e21_gap:.1f}%", 5)
-        else:
-            penalizacion += 8; criterios["EMA21"] = (f"🔴 BAJO EMA21 {e21_gap:.1f}%", 0)
-
-        # ── C5: Mínimos crecientes — base sólida (0-10 pts) ─
-        lows8  = l.iloc[-8:].values
-        minimos_crecientes = all(lows8[i] <= lows8[i+1] for i in range(len(lows8)-1))
-        minimos_generales  = lows8[-1] > lows8[0]
-
-        if minimos_crecientes:
-            score += 10; criterios["ESTRUCTURA"] = ("🟢 MÍNIMOS CRECIENTES", 10)
-        elif minimos_generales:
-            score += 6;  criterios["ESTRUCTURA"] = ("🟡 BASE FORMÁNDOSE", 6)
-        else:
-            penalizacion += 5; criterios["ESTRUCTURA"] = ("🔴 SIN ESTRUCTURA", 0)
-
-        # ── C6: Kalman — velocidad positiva y acelerando (0-10 pts) ──
-        if not pd.isna(vel_now) and not pd.isna(vel_prev):
-            if vel_now > 0 and vel_now > vel_prev:
-                score += 10; criterios["KALMAN"] = ("🟢 ACELERANDO ↑↑", 10)
-            elif vel_now > 0:
-                score += 6;  criterios["KALMAN"] = ("🟡 POSITIVA ↑", 6)
-            elif vel_now < 0:
-                penalizacion += 5; criterios["KALMAN"] = ("🔴 NEGATIVA ↓", 0)
-            else:
-                criterios["KALMAN"] = ("⚪ PLANA →", 3); score += 3
-        else:
-            criterios["KALMAN"] = ("⚪ N/D", 3); score += 3
-
-        # ── C7: Bollinger — no extendido (0-5 pts) ──────────
-        if 0.1 <= bb_now <= 0.55:
-            score += 5;  criterios["BB"] = (f"🟢 ZONA BAJA {bb_now:.2f}", 5)
-        elif bb_now < 0.1:
-            score += 3;  criterios["BB"] = (f"🟡 MUY BAJO {bb_now:.2f}", 3)
-        elif bb_now > 0.80:
-            penalizacion += 10; criterios["BB"] = (f"🔴 EXTENDIDO {bb_now:.2f}", 0)
-        else:
-            criterios["BB"] = (f"⚪ MEDIO {bb_now:.2f}", 2); score += 2
-
-        # ── SCORE FINAL ──────────────────────────────────────
-        score_final = max(0, min(100, score - penalizacion))
-
-        # ── Clasificación del despegue ───────────────────────
-        criterios_ok = sum(1 for k,v2 in criterios.items() if "🟢" in v2[0])
-        criterios_total = len(criterios)
-
-        if score_final >= 72 and criterios_ok >= 5:
-            fase = "🚀 DESPEGUE CONFIRMADO"
-            fase_col = "#00ff88"
-            confianza = "ALTA"
-        elif score_final >= 58 and criterios_ok >= 4:
-            fase = "⚡ INICIO DE IMPULSO"
-            fase_col = "#44ffaa"
-            confianza = "MEDIA-ALTA"
-        elif score_final >= 45 and criterios_ok >= 3:
-            fase = "👀 PRE-DESPEGUE"
-            fase_col = "#ffaa00"
-            confianza = "MEDIA"
-        else:
-            fase = "⏳ ACUMULANDO"
-            fase_col = "#4488ff"
-            confianza = "BAJA"
-
-        # ── Calcular niveles de entrada ──────────────────────
-        precio_actual = c_now
-        atr_v         = atr_now if not pd.isna(atr_now) else precio_actual*0.02
-
-        entry = precio_actual
-        sl    = max(e21_now * 0.995, precio_actual - 1.3*atr_v)
-        tp1   = precio_actual + 2.0*atr_v
-        tp2   = precio_actual + 4.0*atr_v
-        rr    = (tp1-entry)/(entry-sl+1e-10)  # Risk/Reward
-
-        # Retorno reciente (no debe ser muy alto — queremos el inicio)
-        ret3  = (c_now - c.iloc[-4]) / (c.iloc[-4]+1e-10) * 100 if n > 4 else 0
-        ret1  = (c_now - c_prev) / (c_prev+1e-10) * 100
-
-        # Penalizar si ya subió mucho (no es inicio)
-        if ret3 > 15:
-            score_final = max(0, score_final - 20)
-            criterios["TIMING"] = (f"🔴 YA SUBIÓ {ret3:.1f}%", 0)
-        elif ret3 > 8:
-            score_final = max(0, score_final - 10)
-            criterios["TIMING"] = (f"🟡 SUBIDA {ret3:.1f}%", 0)
-        else:
-            criterios["TIMING"] = (f"🟢 INICIO {ret3:.1f}%", 5)
-            score_final = min(100, score_final + 5)
+        e21_v = c.ewm(span=21,adjust=False).mean().iloc[-1]
+        e50_v = c.ewm(span=50,adjust=False).mean().iloc[-1]
 
         return {
-            "symbol":       sym,
-            "score":        score_final,
-            "fase":         fase,
-            "fase_col":     fase_col,
-            "confianza":    confianza,
-            "precio":       precio_actual,
-            "ret1":         round(ret1, 2),
-            "ret3":         round(ret3, 2),
-            "rsi":          round(rsi_now, 1),
-            "vol_spike":    round(vol_max3, 2) if not pd.isna(vol_max3) else 0,
-            "bb_pct":       round(bb_now, 3),
-            "e21_gap":      round(e21_gap, 2),
-            "cruce_macd":   cruce_hoy or cruce_ayer,
-            "cruce_e21":    cruzando_e21,
-            "min_crecientes": minimos_crecientes,
-            "entry":        entry,
-            "sl":           sl,
-            "tp1":          tp1,
-            "tp2":          tp2,
-            "rr":           round(rr, 2),
-            "criterios":    criterios,
-            "criterios_ok": criterios_ok,
-            "atr_pct":      round(atr_v/precio_actual*100, 2) if precio_actual > 0 else 0,
+            "symbol":      sym,
+            "score":       score_final,
+            "calidad":     calidad,
+            "calidad_col": calidad_col,
+            "duracion_est":duracion_est,
+            "capas":       capas_fuertes,
+            # Scores por capa
+            "sc_wyckoff":  score_w,
+            "sc_smart":    score_sm,
+            "sc_momentum": score_mt,
+            "sc_fr":       score_fr,
+            "sc_kalman":   score_kl,
+            # Descripciones
+            "desc_wyckoff":desc_w,
+            "desc_fr":     desc_fr,
+            "sel_smart":   sel_sm,
+            "sel_momentum":sel_mt,
+            # Precio y niveles
+            "precio":      precio,
+            "ret_3":       round(ret_3,  2),
+            "ret_10":      round(ret_10, 2),
+            "rs_btc":      round(rs_val, 2),
+            "vel_kalman":  round(vel_pct,4),
+            "entry":       entry,
+            "sl":          sl,
+            "tp1":         tp1,
+            "tp2":         tp2,
+            "tp3":         tp3,
+            "rr":          round(rr, 2),
+            "atr_pct":     round(atr/precio*100, 2),
+            "e21":         e21_v,
+            "e50":         e50_v,
+            "timing_ok":   timing_ok,
         }
-    except Exception as e:
+    except:
         return None
 
 
-def ejecutar_scanner_despegue(pares, interval_bn, dias, progreso_bar):
-    """Escanea todos los pares y retorna solo los que están despegando."""
+def ejecutar_scanner_sostenido(pares, interval_bn, dias, progreso_bar):
+    """Ejecuta el scanner con barra de progreso."""
+    df_btc = get_btc_data_scanner()
     resultados = []
     total = len(pares)
     for i, sym in enumerate(pares):
-        progreso_bar.progress((i+1)/total, text=f"🔭 Analizando {sym} ({i+1}/{total})...")
+        progreso_bar.progress((i+1)/total, text=f"🔭 {sym} ({i+1}/{total})")
         try:
             df_s = binance_descargar(sym, interval_bn, dias)
-            res  = analizar_despegue(df_s, sym)
-            if res and res["score"] >= 40:
-                resultados.append(res)
+            res  = analizar_subida_sostenida(df_s, sym, df_btc)
+            if res: resultados.append(res)
         except:
             pass
-        time.sleep(0.08)
-
+        time.sleep(0.06)
     resultados.sort(key=lambda x: x["score"], reverse=True)
     return resultados
 
 
 # ══════════════════════════════════════════════════════════════
-#  UI DEL SCANNER DE DESPEGUE
+#  UI — SCANNER DE SUBIDAS SOSTENIDAS
 # ══════════════════════════════════════════════════════════════
 st.sidebar.divider()
-st.sidebar.markdown("**🚀 SCANNER DE DESPEGUE**")
+st.sidebar.markdown("**🏆 SCANNER SOSTENIDO**")
 
 with st.sidebar:
-    tf_scan_opt = st.selectbox("⏱ TF Scanner:",
-                               ["1H · 3 días", "4H · 10 días", "1D · 30 días", "1D · 90 días"],
-                               key="tf_scan_sel")
-    min_score_scan = st.slider("Score mínimo:", 40, 85, 58, key="sc_min_scan")
-    run_scanner = st.sidebar.button("🚀 BUSCAR DESPEGUES", use_container_width=True)
+    tf_scan_sos = st.selectbox("⏱ TF Scanner:",
+                               ["1D · 30 días","1D · 90 días","4H · 10 días","1H · 3 días"],
+                               key="tf_scan_sos",
+                               index=0)
+    min_sc_sos = st.slider("Score mínimo:", 35, 80, 50, key="sc_sos")
+    run_scanner_sos = st.button("🏆 BUSCAR SUBIDAS SOSTENIDAS", use_container_width=True)
 
-if run_scanner:
+if run_scanner_sos:
     st.divider()
-    st.markdown("## 🚀 SCANNER DE DESPEGUE CUÁNTICO")
+    st.markdown("## 🏆 SCANNER DE SUBIDAS SOSTENIDAS")
     st.markdown("""
-    <div style="background:#080c18;border:1px solid #1a2a4a;border-radius:8px;padding:12px 16px;
-                font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#7aabff;margin-bottom:12px">
-        <b style="color:#4488ff">¿Qué busca este scanner?</b><br>
-        Criptos que <b>ACABAN de iniciar</b> un impulso sólido — no las que ya subieron.<br>
-        Criterios: Cruce MACD reciente · Volumen spike · RSI saliendo de sobreventa ·
-        Ruptura EMA21 · Mínimos crecientes · Kalman acelerando · BB no extendido
+    <div style="background:#080c18;border:1px solid #1a2a4a;border-radius:8px;
+                padding:12px 16px;font-family:'Share Tech Mono',monospace;
+                font-size:0.78rem;color:#7aabff;margin-bottom:10px">
+        <b style="color:#4488ff;font-size:0.85rem">🏆 Modelo de 5 Capas (Wyckoff + Smart Money)</b><br><br>
+        <b style="color:#00ff88">L1 Wyckoff</b> → Acumulación previa sólida (base de semanas)<br>
+        <b style="color:#44aaff">L2 Smart Money</b> → OBV, Volume Delta, compradores dominantes<br>
+        <b style="color:#ffaa00">L3 Momentum</b> → RSI sano + MACD + EMAs alineadas<br>
+        <b style="color:#ff88ff">L4 Fuerza Relativa</b> → Más fuerte que BTC (capital rotando)<br>
+        <b style="color:#88ffdd">L5 Kalman</b> → Tendencia real sostenida, no ruido<br><br>
+        <b style="color:#ffdd44">Solo aparecen criptos donde ≥3 capas confirman la subida.</b>
     </div>
     """, unsafe_allow_html=True)
 
-    tf_map_sc = {
-        "1H · 3 días":   ("1h",  3),
-        "4H · 10 días":  ("4h", 10),
+    tf_map_sos = {
         "1D · 30 días":  ("1d", 30),
         "1D · 90 días":  ("1d", 90),
+        "4H · 10 días":  ("4h", 10),
+        "1H · 3 días":   ("1h", 3),
     }
-    iv_sc, d_sc = tf_map_sc[tf_scan_opt]
+    iv_sos, d_sos = tf_map_sos[tf_scan_sos]
 
-    prog_sc = st.progress(0, text="Iniciando scanner...")
-    t_inicio = time.time()
-    resultados_sc = ejecutar_scanner_despegue(SCAN_PARES_BINANCE, iv_sc, d_sc, prog_sc)
-    t_total = time.time() - t_inicio
-    prog_sc.empty()
+    prog_sos = st.progress(0, text="Iniciando...")
+    t0 = time.time()
+    resultados_sos = ejecutar_scanner_sostenido(SCAN_PARES_SOSTENIDO, iv_sos, d_sos, prog_sos)
+    prog_sos.empty()
+    t_total = time.time() - t0
 
-    resultados_filtrados = [r for r in resultados_sc if r["score"] >= min_score_scan]
+    filtrados = [r for r in resultados_sos if r["score"] >= min_sc_sos]
+    st.caption(f"Escaneados: {len(SCAN_PARES_SOSTENIDO)} · Tiempo: {t_total:.0f}s · Calificados: {len(filtrados)}")
 
-    st.caption(f"Escaneados: {len(SCAN_PARES_BINANCE)} pares · Tiempo: {t_total:.0f}s · Encontrados: {len(resultados_filtrados)}")
+    if not filtrados:
+        st.info("""
+        🔍 **No se encontraron subidas sostenidas ahora.**
 
-    if not resultados_filtrados:
-        st.info("🔍 No se encontraron despegues con ese score mínimo ahora. El mercado puede estar en acumulación o distribución. Baja el score o cambia el timeframe.")
+        Esto es **normal y es buena señal** — el scanner es exigente por diseño.
+        Cuando el mercado está en acumulación o distribución, no hay señales válidas.
+
+        **Prueba:**
+        - Timeframe `1D · 90 días` (más contexto = mejor análisis Wyckoff)
+        - Baja el score mínimo a 40
+        - Vuelve en 24-48 horas (los ciclos cambian)
+        """)
     else:
-        # ── Gráfico visual de oportunidades ─────────────────
-        fig_sc = plt.figure(figsize=(14, 5), facecolor=BG)
-        ax_sc  = fig_sc.add_subplot(1,1,1); estilizar_ax(ax_sc)
-        top_vis = resultados_filtrados[:20]
+        # ── OVERVIEW — mapa de calor de scores ──────────────
+        fig_ov = plt.figure(figsize=(14, 5), facecolor=BG)
+        ax_ov  = fig_ov.add_subplot(1,1,1); estilizar_ax(ax_ov)
+        top_vis = filtrados[:18]
         syms_v  = [r["symbol"].replace("USDT","") for r in top_vis]
         scrs_v  = [r["score"] for r in top_vis]
-        cols_v  = []
+        bars_v  = []
         for r in top_vis:
-            if r["score"] >= 72:   cols_v.append("#00ff88")
-            elif r["score"] >= 58: cols_v.append("#44ffaa")
-            elif r["score"] >= 45: cols_v.append("#ffaa00")
-            else:                  cols_v.append("#4488ff")
-        bars_v = ax_sc.bar(syms_v, scrs_v, color=cols_v, alpha=0.85, width=0.65, zorder=3)
-        for bar, sc_v, r in zip(bars_v, scrs_v, top_vis):
-            ax_sc.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.8,
-                      f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
-            ax_sc.text(bar.get_x()+bar.get_width()/2, bar.get_height()/2,
-                      r["fase"].split()[0], ha="center", va="center", color="white", fontsize=10)
-        ax_sc.axhline(72, color="#00ff88", lw=1.2, ls="--", alpha=0.7, label="🚀 Despegue")
-        ax_sc.axhline(58, color="#ffaa00", lw=1,   ls="--", alpha=0.5, label="⚡ Impulso")
-        ax_sc.set_ylim(0, 110); ax_sc.set_ylabel("Score Despegue", color="#2a4060", fontsize=8)
-        ax_sc.set_title(f"Scanner de Despegue — {tf_scan_opt} — {len(top_vis)} mejores oportunidades",
-                       color="#4488ff", fontsize=10)
-        ax_sc.legend(fontsize=7, framealpha=0.3)
-        ax_sc.tick_params(axis="x", labelrotation=35, labelsize=8, colors="#4a6080")
-        ax_sc.grid(axis="y", color="#0d1a2e", lw=0.5, alpha=0.5)
-        plt.tight_layout(); render_fig(fig_sc)
+            if r["score"] >= 75:   bars_v.append("#00ff88")
+            elif r["score"] >= 62: bars_v.append("#44ffaa")
+            elif r["score"] >= 50: bars_v.append("#ffaa00")
+            else:                  bars_v.append("#4488ff")
 
-        # ── TABS por fase ────────────────────────────────────
-        despegues   = [r for r in resultados_filtrados if "DESPEGUE" in r["fase"]]
-        impulsos    = [r for r in resultados_filtrados if "IMPULSO" in r["fase"]]
-        pre_despegues=[r for r in resultados_filtrados if "PRE" in r["fase"]]
-        acumulando  = [r for r in resultados_filtrados if "ACUMUL" in r["fase"]]
+        brs = ax_ov.bar(syms_v, scrs_v, color=bars_v, alpha=0.85, width=0.65, zorder=3)
+        for bar, r in zip(brs, top_vis):
+            ax_ov.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.5,
+                      f"{r['score']}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
+            ax_ov.text(bar.get_x()+bar.get_width()/2, bar.get_height()//2,
+                      r["calidad"].split()[0], ha="center", va="center", color="white", fontsize=9)
 
-        tab_labels = []
-        if despegues:    tab_labels.append(f"🚀 Despegue ({len(despegues)})")
-        if impulsos:     tab_labels.append(f"⚡ Impulso ({len(impulsos)})")
-        if pre_despegues:tab_labels.append(f"👀 Pre-Despegue ({len(pre_despegues)})")
-        if acumulando:   tab_labels.append(f"⏳ Acumulando ({len(acumulando)})")
-        if not tab_labels: tab_labels = ["📋 Resultados"]
+        # Líneas de referencia
+        ax_ov.axhline(75, color="#00ff88", lw=1.2, ls="--", alpha=0.7, label="💎 Excelente")
+        ax_ov.axhline(62, color="#ffaa00", lw=1,   ls="--", alpha=0.5, label="🚀 Sólida")
+        ax_ov.axhline(50, color="#4488ff", lw=0.8, ls=":",  alpha=0.4, label="⚡ Probable")
+        ax_ov.set_ylim(0, 110)
+        ax_ov.set_title(f"Calidad de Subida Sostenida — 5 Capas · {tf_scan_sos}", color="#4488ff", fontsize=10)
+        ax_ov.legend(fontsize=7, framealpha=0.3, loc="upper right")
+        ax_ov.grid(axis="y", color="#0d1a2e", lw=0.5, alpha=0.5)
+        ax_ov.tick_params(axis="x", labelrotation=35, labelsize=8, colors="#4a6080")
+        plt.tight_layout(); render_fig(fig_ov)
 
-        tabs_sc = st.tabs(tab_labels)
-        grupos  = [g for g in [despegues,impulsos,pre_despegues,acumulando] if g]
+        # ── RADAR de las 5 capas (Top 5) ────────────────────
+        top5 = filtrados[:5]
+        if len(top5) >= 2:
+            st.markdown("### 📡 Radar de capas — Top oportunidades")
+            fig_rad = plt.figure(figsize=(14, 4), facecolor=BG)
+            n_cats  = 5
+            cats    = ["Wyckoff\n/30", "Smart\nMoney/25", "Momentum\n/20", "F.Relativa\n/15", "Kalman\n/10"]
+            maxs    = [30, 25, 20, 15, 10]
 
-        for tab_i, (tab_obj, grupo) in enumerate(zip(tabs_sc, grupos)):
+            for idx_r, r in enumerate(top5):
+                ax_r = fig_rad.add_subplot(1, len(top5), idx_r+1); estilizar_ax(ax_r)
+                vals = [r["sc_wyckoff"], r["sc_smart"], r["sc_momentum"], r["sc_fr"], r["sc_kalman"]]
+                pcts = [v/m for v,m in zip(vals,maxs)]
+                x    = np.arange(n_cats)
+                ax_r.bar(x, [v*100 for v in pcts], color=r["calidad_col"], alpha=0.7, width=0.6)
+                ax_r.set_xticks(x); ax_r.set_xticklabels(cats, fontsize=6, color="#4a6080")
+                ax_r.set_ylim(0, 110); ax_r.set_yticks([])
+                ax_r.set_title(f"{r['symbol'].replace('USDT','')}\n{r['score']}/100",
+                              color=r["calidad_col"], fontsize=8, fontweight="bold")
+                for xi, (pct, val) in enumerate(zip(pcts, vals)):
+                    ax_r.text(xi, pct*100+2, f"{val}", ha="center", fontsize=7, color="white")
+                ax_r.axhline(70, color="#2a4060", lw=0.5, ls="--")
+
+            plt.tight_layout(); render_fig(fig_rad)
+
+        # ── TABS por calidad ─────────────────────────────────
+        excelentes = [r for r in filtrados if "EXCELENTE" in r["calidad"]]
+        solidas    = [r for r in filtrados if "SÓLIDA"    in r["calidad"]]
+        probables  = [r for r in filtrados if "PROBABLE"  in r["calidad"]]
+        formacion  = [r for r in filtrados if "FORMACIÓN" in r["calidad"]]
+
+        t_labels = []
+        grupos_t = []
+        if excelentes: t_labels.append(f"💎 Excelente ({len(excelentes)})"); grupos_t.append(excelentes)
+        if solidas:    t_labels.append(f"🚀 Sólida ({len(solidas)})");    grupos_t.append(solidas)
+        if probables:  t_labels.append(f"⚡ Probable ({len(probables)})"); grupos_t.append(probables)
+        if formacion:  t_labels.append(f"👀 Formación ({len(formacion)})");grupos_t.append(formacion)
+        if not t_labels: t_labels=["📋 Todos"]; grupos_t=[filtrados]
+
+        tabs_sos = st.tabs(t_labels)
+
+        for tab_obj, grupo in zip(tabs_sos, grupos_t):
             with tab_obj:
-                # Cards top 3 de cada grupo
+                # Cards top 3
                 top3 = grupo[:3]
-                card_cols = st.columns(len(top3)) if len(top3) <= 3 else st.columns(3)
+                cols3 = st.columns(min(3, len(top3)))
                 for i, r in enumerate(top3):
                     pf = r["precio"]
                     pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                    # Criterios OK en badges
-                    badges = []
-                    for k,v2 in r["criterios"].items():
-                        if "🟢" in v2[0]: badges.append(f"<span style='color:#00ff88;font-size:0.72rem'>{k}✅</span>")
-                    badges_html = " ".join(badges[:5])
-                    rr_col = "#00ff88" if r["rr"] >= 2 else ("#ffaa00" if r["rr"] >= 1.5 else "#ff3355")
-                    card_cols[i].markdown(f"""
-                    <div style="background:#08090f;border:1px solid {r['fase_col']};border-radius:10px;
-                                padding:14px;font-family:'Share Tech Mono',monospace">
-                        <div style="font-family:'Orbitron',monospace;font-size:1.1rem;
-                                    color:{r['fase_col']};font-weight:700">{r['symbol'].replace('USDT','/USDT')}</div>
-                        <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">{r['fase']}</div>
-                        <div style="font-size:1.5rem;font-weight:700;color:{r['fase_col']}">{r['score']}/100</div>
-                        <div style="color:#c0d8ff;margin:4px 0">{pfmt}
-                            <span style="color:{'#00ff88' if r['ret1']>0 else '#ff3355'}">{r['ret1']:+.2f}%</span>
+                    rr_col = "#00ff88" if r["rr"]>=2.5 else ("#ffaa00" if r["rr"]>=1.5 else "#ff3355")
+
+                    # Badges de capas
+                    capas_html = ""
+                    capa_items = [
+                        ("L1", r["sc_wyckoff"],  30, r["calidad_col"]),
+                        ("L2", r["sc_smart"],    25, "#44aaff"),
+                        ("L3", r["sc_momentum"], 20, "#ffaa00"),
+                        ("L4", r["sc_fr"],       15, "#ff88ff"),
+                        ("L5", r["sc_kalman"],   10, "#88ffdd"),
+                    ]
+                    for lbl, sc_c, mx_c, col_c in capa_items:
+                        pct_c = sc_c/mx_c*100
+                        ic    = "✅" if pct_c>=60 else ("⚠️" if pct_c>=35 else "❌")
+                        capas_html += f'<span style="color:{col_c};font-size:0.7rem">{lbl}:{sc_c}{ic} </span>'
+
+                    cols3[i].markdown(f"""
+                    <div style="background:#08090f;border:1.5px solid {r['calidad_col']};
+                                border-radius:10px;padding:14px;font-family:'Share Tech Mono',monospace">
+                        <div style="font-family:'Orbitron',monospace;font-size:1rem;
+                                    color:{r['calidad_col']};font-weight:700">
+                            {r['symbol'].replace('USDT','/USDT')}
                         </div>
-                        <div style="margin:6px 0">{badges_html}</div>
-                        <div style="color:#2a4060;font-size:0.7rem;border-top:1px solid #0d1a2e;padding-top:6px;margin-top:6px">
-                            Entry: <span style="color:#00ff88">{pfmt}</span><br>
-                            SL: <span style="color:#ff3355">{fp(r['sl'])}</span>
-                            TP1: <span style="color:#ffaa00">{fp(r['tp1'])}</span>
-                            TP2: <span style="color:#ffdd44">{fp(r['tp2'])}</span><br>
-                            R/R: <span style="color:{rr_col}">{r['rr']:.1f}x</span>
-                            · ATR: {r['atr_pct']}%
-                            · Conf: <b style="color:{r['fase_col']}">{r['confianza']}</b>
+                        <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">{r['calidad']}</div>
+                        <div style="font-size:1.6rem;font-weight:700;color:{r['calidad_col']}">{r['score']}/100</div>
+                        <div style="color:#c0d8ff;font-size:0.9rem;margin:4px 0">
+                            {pfmt}
+                            <span style="color:{'#00ff88' if r['ret_3']>0 else '#ff3355'}">{r['ret_3']:+.1f}%/3v</span>
+                        </div>
+                        <div style="margin:5px 0">{capas_html}</div>
+                        <div style="font-size:0.7rem;color:#2a4060;margin:4px 0">
+                            FR vs BTC: <b style="color:{'#00ff88' if r['rs_btc']>0 else '#ff3355'}">{r['rs_btc']:+.1f}%</b>
+                            &nbsp;·&nbsp;Duración est.: <b style="color:{r['calidad_col']}">{r['duracion_est']}</b>
+                        </div>
+                        <div style="border-top:1px solid #0d1a2e;padding-top:7px;margin-top:6px;font-size:0.7rem;color:#2a4060">
+                            Entry <span style="color:#00ff88">{pfmt}</span><br>
+                            SL <span style="color:#ff3355">{fp(r['sl'])}</span> &nbsp;
+                            TP1 <span style="color:#ffaa00">{fp(r['tp1'])}</span> &nbsp;
+                            TP2 <span style="color:#ffdd44">{fp(r['tp2'])}</span><br>
+                            TP3 <span style="color:#ffffff">{fp(r['tp3'])}</span> (objetivo semanas)<br>
+                            R/R <span style="color:{rr_col}">×{r['rr']}</span> &nbsp;·&nbsp; ATR {r['atr_pct']}%
                         </div>
                     </div>""", unsafe_allow_html=True)
 
                 st.markdown("&nbsp;")
 
-                # Tabla completa del grupo
+                # Tabla completa con column_config
                 filas = []
                 for r in grupo:
                     pf = r["precio"]
                     pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                    ok_str = " ".join([k for k,v2 in r["criterios"].items() if "🟢" in v2[0]])
                     filas.append({
-                        "Par":         r["symbol"].replace("USDT","/USDT"),
-                        "Score":       r["score"],
-                        "Fase":        r["fase"],
-                        "Precio":      pfmt,
-                        "Chg 1v":     f"{r['ret1']:+.2f}%",
-                        "Chg 3v":     f"{r['ret3']:+.2f}%",
-                        "RSI":         r["rsi"],
-                        "Vol Spike":  f"{r['vol_spike']}x",
-                        "BB %B":       r["bb_pct"],
-                        "R/R":         r["rr"],
-                        "OK":          ok_str,
-                        "MACD Cruce": "✅" if r["cruce_macd"] else "—",
-                        "EMA21 Rota": "✅" if r["cruce_e21"] else "—",
-                        "Mín. Crec.": "✅" if r["min_crecientes"] else "—",
+                        "Par":        r["symbol"].replace("USDT","/USDT"),
+                        "Score":      r["score"],
+                        "Calidad":    r["calidad"],
+                        "Precio":     pfmt,
+                        "Ret 3v":    f"{r['ret_3']:+.1f}%",
+                        "Ret 10v":   f"{r['ret_10']:+.1f}%",
+                        "FR vs BTC": f"{r['rs_btc']:+.1f}%",
+                        "L1 Wyckoff":r["sc_wyckoff"],
+                        "L2 SmartM": r["sc_smart"],
+                        "L3 Moment": r["sc_momentum"],
+                        "L4 F.Rel":  r["sc_fr"],
+                        "L5 Kalman": r["sc_kalman"],
+                        "Capas OK":  r["capas"],
+                        "R/R":        r["rr"],
+                        "Duración":  r["duracion_est"],
                     })
+
                 if filas:
                     df_tab = pd.DataFrame(filas)
-                    # Colorear score
                     st.dataframe(df_tab, use_container_width=True, hide_index=True,
                                 column_config={
-                                    "Score": st.column_config.ProgressColumn(
-                                        "Score", min_value=0, max_value=100, format="%d"),
-                                    "R/R": st.column_config.NumberColumn("R/R", format="%.1f"),
+                                    "Score":       st.column_config.ProgressColumn("Score",     min_value=0, max_value=100, format="%d"),
+                                    "L1 Wyckoff":  st.column_config.ProgressColumn("L1 Wyckoff",min_value=0, max_value=30,  format="%d"),
+                                    "L2 SmartM":   st.column_config.ProgressColumn("L2 Smart",  min_value=0, max_value=25,  format="%d"),
+                                    "L3 Moment":   st.column_config.ProgressColumn("L3 Moment", min_value=0, max_value=20,  format="%d"),
+                                    "L4 F.Rel":    st.column_config.ProgressColumn("L4 F.Rel",  min_value=0, max_value=15,  format="%d"),
+                                    "L5 Kalman":   st.column_config.ProgressColumn("L5 Kalman", min_value=0, max_value=10,  format="%d"),
+                                    "R/R":         st.column_config.NumberColumn("R/R", format="%.1f"),
                                 })
 
-        # ── Radar de criterios del #1 ────────────────────────
-        if resultados_filtrados:
+        # ── Diagnóstico detallado del #1 ─────────────────────
+        if filtrados:
             st.divider()
-            st.markdown("### 🎯 Diagnóstico detallado — Mejor oportunidad")
-            top1 = resultados_filtrados[0]
-            st.markdown(f"**{top1['symbol']} — Score: {top1['score']}/100 — {top1['fase']}**")
-            crit_cols = st.columns(len(top1["criterios"]))
-            for i, (k, v2) in enumerate(top1["criterios"].items()):
-                label, pts = v2
-                col_c = "#00ff88" if "🟢" in label else ("#ffaa00" if "🟡" in label else "#ff3355")
-                crit_cols[i].markdown(f"""
-                <div style="background:#08090f;border:1px solid {col_c};border-radius:8px;
-                            padding:8px;text-align:center;font-family:'Share Tech Mono',monospace">
-                    <div style="font-size:0.65rem;color:#4a6080">{k}</div>
-                    <div style="font-size:0.78rem;color:{col_c}">{label}</div>
-                    <div style="font-size:1rem;font-weight:700;color:{col_c}">{pts}pts</div>
+            top1 = filtrados[0]
+            st.markdown(f"### 🔬 Diagnóstico completo — {top1['symbol']}")
+
+            col_d1, col_d2 = st.columns([1, 2])
+            with col_d1:
+                pf = top1["precio"]
+                pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
+                st.markdown(f"""
+                <div class="mc" style="border-left:3px solid {top1['calidad_col']}">
+                    <div class="ml">Calificación</div>
+                    <div class="mv" style="color:{top1['calidad_col']}">{top1['calidad']}</div>
+                    <br>
+                    <div class="ml">Score Total</div>
+                    <div style="font-size:2rem;font-weight:700;color:{top1['calidad_col']}">{top1['score']}/100</div>
+                    <br>
+                    <div class="ml">Precio · Duración estimada</div>
+                    <div style="color:#c0d8ff">{pfmt} · <b>{top1['duracion_est']}</b></div>
+                    <br>
+                    <div class="ml">Fuerza vs BTC</div>
+                    <div style="color:{'#00ff88' if top1['rs_btc']>0 else '#ff3355'};font-size:1rem">{top1['rs_btc']:+.1f}%</div>
+                    <br>
+                    <div class="ml">Capas confirmadas</div>
+                    <div style="color:#ffaa00;font-size:1.1rem">{top1['capas']}/5 capas</div>
                 </div>""", unsafe_allow_html=True)
 
-        # ── Consejo de gestión de riesgo ─────────────────────
+            with col_d2:
+                # Barra de progreso de cada capa
+                capas_detalle = [
+                    ("L1 — Wyckoff / Acumulación",  top1["sc_wyckoff"],  30, "#00ff88",  top1["desc_wyckoff"]),
+                    ("L2 — Smart Money / Volumen",  top1["sc_smart"],    25, "#44aaff",  str(top1["sel_smart"])),
+                    ("L3 — Momentum Técnico",        top1["sc_momentum"], 20, "#ffaa00",  str(top1["sel_momentum"])),
+                    ("L4 — Fuerza Relativa vs BTC",  top1["sc_fr"],       15, "#ff88ff",  top1["desc_fr"]),
+                    ("L5 — Kalman Trend",             top1["sc_kalman"],   10, "#88ffdd",  f"Vel: {top1['vel_kalman']:+.4f}%/vela"),
+                ]
+                for nombre, sc_c, mx_c, col_c, det in capas_detalle:
+                    pct_c = sc_c/mx_c*100
+                    ic    = "✅" if pct_c>=60 else ("⚠️" if pct_c>=35 else "❌")
+                    st.markdown(f"""
+                    <div style="margin:6px 0;font-family:'Share Tech Mono',monospace">
+                        <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#4a6080">
+                            <span style="color:{col_c}">{ic} {nombre}</span>
+                            <span style="color:{col_c};font-weight:700">{sc_c}/{mx_c} ({pct_c:.0f}%)</span>
+                        </div>
+                        <div class="bw"><div class="bf" style="width:{pct_c:.0f}%;background:{col_c}"></div></div>
+                        <div style="font-size:0.65rem;color:#2a4060;margin-top:1px">{str(det)[:80]}</div>
+                    </div>""", unsafe_allow_html=True)
+
+        # ── Nota educativa ────────────────────────────────────
         st.markdown("""
-        <div style="background:#0d1428;border-left:3px solid #ffaa00;border-radius:6px;
+        <div style="background:#0d1428;border-left:3px solid #4488ff;border-radius:6px;
                     padding:12px 16px;margin-top:12px;font-family:'Share Tech Mono',monospace;
-                    font-size:0.78rem;color:#ffaa00">
-            <b>⚠️ GESTIÓN DE RIESGO:</b><br>
-            · Usa máximo 2-5% de tu capital por operación<br>
-            · Respeta siempre el Stop Loss sugerido<br>
-            · Al llegar a TP1 → mueve SL a breakeven<br>
-            · En cripto volátil: prefiere entradas en pullback al EMA21<br>
-            · Score ≥ 72 + R/R ≥ 2x = mejores condiciones de entrada
+                    font-size:0.77rem;color:#7aabff">
+            <b style="color:#4488ff">📚 CÓMO OPERAR ESTOS RESULTADOS:</b><br>
+            · <b>💎 Excelente</b> — Entrada directa con 3-5% capital, SL ajustado, TP3 es el objetivo real<br>
+            · <b>🚀 Sólida</b> — Entrada en pullback a EMA21, reducir tamaño si no hay retroceso<br>
+            · <b>⚡ Probable</b> — Esperar confirmación de vela adicional antes de entrar<br>
+            · <b>Regla de oro:</b> Si L1 (Wyckoff) y L2 (Smart Money) no están verdes, NO entres<br>
+            · <b>Trailing:</b> Mueve SL a breakeven al llegar a TP1. Al TP2 → cierra 50%. Deja correr al TP3.
         </div>
         """, unsafe_allow_html=True)
