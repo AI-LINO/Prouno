@@ -1172,260 +1172,491 @@ if ejecutar:
 
 
 # ══════════════════════════════════════════════════════════════
-#  🔭 SCANNER DE CRIPTOS — Encuentra las mejores entradas
+
 # ══════════════════════════════════════════════════════════════
-def scanner_score_rapido(df):
-    """Score rápido para el scanner — sin HMM para velocidad."""
-    if df is None or df.empty or len(df) < 25:
+# 🚀 SCANNER DE DESPEGUE — Detecta criptos que ACABAN de iniciar
+#    un impulso sólido, no las que ya subieron.
+#
+#  CRITERIOS DE DESPEGUE SÓLIDO (todos deben cumplirse):
+#  1. MACD: cruce alcista MUY reciente (últimas 1-3 velas)
+#  2. Volumen: spike 1.8x+ sobre promedio en el momento del cruce
+#  3. RSI: saliendo de sobreventa (28-55) — no sobrecomprado aún
+#  4. Precio: acaba de romper EMA21 desde abajo
+#  5. Estructura: mínimos crecientes en las últimas 8 velas (tendencia base)
+#  6. Kalman: velocidad positiva y acelerando (momentum real)
+#  7. Bollinger: precio en zona baja-media (< 0.55) — no extendido
+#  8. Fuerza: retorno acumulado últimas 3 velas > 0 pero < 8% (inicio, no final)
+# ══════════════════════════════════════════════════════════════
+
+# Lista amplia de pares Binance para escanear
+SCAN_PARES_BINANCE = [
+    # Top caps
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
+    "AVAXUSDT","DOTUSDT","LINKUSDT","LTCUSDT","ATOMUSDT","NEARUSDT",
+    # Mid caps con alta volatilidad (despegues más explosivos)
+    "INJUSDT","SUIUSDT","APTUSDT","ARBUSDT","OPUSDT","SEIUSDT",
+    "TIAUSDT","FETUSDT","RENDERUSDT","IMXUSDT","GMXUSDT","RUNEUSDT",
+    "JUPUSDT","WUSDT","STRKUSDT","DYMUSDT","ALTUSDT","MANTAUSDT",
+    "PIXELUSDT","PORTALUSDT","ACEUSDT","XAIUSDT","AIUSDT","AGIXUSDT",
+    # Memecoins con despegues rápidos
+    "DOGEUSDT","SHIBUSDT","PEPEUSDT","FLOKIUSDT","BONKUSDT","WIFUSDT",
+    "BOMEUSDT","MEWUSDT","NEIROUSDT","MOGUSDT",
+    # DeFi
+    "UNIUSDT","AAVEUSDT","CRVUSDT","MKRUSDT","SNXUSDT","COMPUSDT",
+    # Layer 2 / Infra
+    "MATICUSDT","LRCUSDT","METISUSDT","SKLUSDT","CELRUSDT",
+]
+
+def analizar_despegue(df, sym):
+    """
+    Análisis profundo de despegue. Retorna score 0-100 y diagnóstico.
+    Diseñado para encontrar el INICIO del impulso, no el final.
+    """
+    if df is None or df.empty or len(df) < 35:
         return None
     try:
-        ind = calcular_indicadores(df)
-        rsi  = ind["rsi"].iloc[-1]
-        hist = ind["macd_hist"].iloc[-1]
-        prev = ind["macd_hist"].iloc[-2] if len(ind["macd_hist"]) > 1 else hist
-        pct  = ind["bb_pct"].iloc[-1]
-        e9   = ind["ema9"].iloc[-1]; e21 = ind["ema21"].iloc[-1]; e50 = ind["ema50"].iloc[-1]
-        vr   = ind["vol_ratio"].iloc[-1]
-        sk   = ind["stoch_k"].iloc[-1]
-        atr  = ind["atr_pct"].iloc[-1]
-        chg1 = ind["chg1"].iloc[-1]
+        c   = df["Close"]; h = df["High"]; l = df["Low"]; v = df["Volume"]
+        n   = len(c)
 
-        if any(pd.isna(v) for v in [rsi, hist, pct, e9, e21]): return None
+        # ── Indicadores base ────────────────────────────────
+        # EMA rápidas
+        e9  = c.ewm(span=9,  adjust=False).mean()
+        e21 = c.ewm(span=21, adjust=False).mean()
+        e50 = c.ewm(span=50, adjust=False).mean()
 
-        score = 0
-        # RSI
-        if rsi < 30: score += 25
-        elif rsi < 45: score += 16
-        elif rsi < 55: score += 8
-        elif rsi > 70: score -= 10
-        # MACD cruce
-        if not pd.isna(prev):
-            if prev <= 0 and hist > 0: score += 22
-            elif hist > 0 and hist > prev: score += 14
-            elif hist > 0: score += 7
-            elif prev >= 0 and hist < 0: score -= 15
-        # BB posición
-        if pct < 0.1: score += 15
-        elif pct < 0.3: score += 9
-        elif pct > 0.9: score -= 10
-        # EMAs
-        if not pd.isna(e50):
-            if e9 > e21 > e50: score += 18
-            elif e9 > e21: score += 10
-            else: score -= 5
-        # Volumen
-        if not pd.isna(vr):
-            if vr > 2: score += 10
-            elif vr > 1.3: score += 5
-        # StochRSI
-        if not pd.isna(sk):
-            if sk < 20: score += 10
-            elif sk > 80: score -= 8
+        # MACD
+        ef  = c.ewm(span=12, adjust=False).mean()
+        es  = c.ewm(span=26, adjust=False).mean()
+        mac = ef - es
+        sig = mac.ewm(span=9, adjust=False).mean()
+        hist= mac - sig
 
-        precio = df["Close"].iloc[-1]
+        # RSI rápido (EWM)
+        d   = c.diff()
+        g   = d.clip(lower=0).ewm(com=13, adjust=False).mean()
+        ls  = (-d.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rsi = 100 - (100/(1+g/(ls+1e-10)))
+
+        # Volumen ratio
+        vol_sma = v.rolling(20).mean()
+        vol_r   = v / (vol_sma + 1e-10)
+
+        # Bollinger
+        bb_mid = c.rolling(20).mean()
+        bb_std = c.rolling(20).std()
+        bb_up  = bb_mid + 2*bb_std
+        bb_lo  = bb_mid - 2*bb_std
+        bb_pct = (c - bb_lo)/(bb_up - bb_lo + 1e-9)
+
+        # ATR
+        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = tr.ewm(span=14, adjust=False).mean()
+
+        # Kalman velocidad (simplificado)
+        precio_k = c.ewm(span=5, adjust=False).mean()  # proxy Kalman
+        vel_k    = precio_k.diff()
+
+        # Valores actuales
+        rsi_now   = rsi.iloc[-1]
+        hist_now  = hist.iloc[-1]
+        hist_prev = hist.iloc[-2]
+        hist_prev2= hist.iloc[-3] if n > 3 else hist_prev
+        vol_now   = vol_r.iloc[-1]
+        bb_now    = bb_pct.iloc[-1]
+        e9_now    = e9.iloc[-1]; e21_now=e21.iloc[-1]; e50_now=e50.iloc[-1]
+        c_now     = c.iloc[-1];  c_prev  = c.iloc[-2]
+        vel_now   = vel_k.iloc[-1]; vel_prev=vel_k.iloc[-2]
+        atr_now   = atr.iloc[-1]
+
+        if any(pd.isna(v2) for v2 in [rsi_now,hist_now,hist_prev,bb_now,e9_now,e21_now]):
+            return None
+
+        # ════════════════════════════════════════════════════
+        #  CRITERIOS DE DESPEGUE — cada uno puntúa
+        # ════════════════════════════════════════════════════
+        criterios  = {}
+        score      = 0
+        penalizacion = 0
+
+        # ── C1: MACD Cruce alcista reciente (0-25 pts) ──────
+        cruce_hoy   = hist_prev <= 0 and hist_now > 0
+        cruce_ayer  = hist.iloc[-3] <= 0 and hist_prev > 0 if n > 3 else False
+        macd_acelerando = hist_now > hist_prev > hist_prev2
+
+        if cruce_hoy:
+            score += 25; criterios["MACD"] = ("🟢 CRUCE HOY", 25)
+        elif cruce_ayer and macd_acelerando:
+            score += 18; criterios["MACD"] = ("🟡 CRUCE AYER+ACCEL", 18)
+        elif macd_acelerando and hist_now > 0:
+            score += 10; criterios["MACD"] = ("🟡 ACELERANDO", 10)
+        elif hist_now <= 0:
+            penalizacion += 20; criterios["MACD"] = ("🔴 NEGATIVO", 0)
+        else:
+            criterios["MACD"] = ("⚪ POSITIVO", 5); score += 5
+
+        # ── C2: Volumen en el cruce (0-20 pts) ──────────────
+        # Buscar spike de volumen en las últimas 3 velas
+        vol_max3 = vol_r.iloc[-3:].max()
+        if not pd.isna(vol_now):
+            if vol_max3 > 2.5:
+                score += 20; criterios["VOL"] = (f"🟢 SPIKE {vol_max3:.1f}x", 20)
+            elif vol_max3 > 1.8:
+                score += 14; criterios["VOL"] = (f"🟡 ALTO {vol_max3:.1f}x", 14)
+            elif vol_max3 > 1.3:
+                score += 7;  criterios["VOL"] = (f"⚪ ELEVADO {vol_max3:.1f}x", 7)
+            else:
+                penalizacion += 10; criterios["VOL"] = (f"🔴 SECO {vol_max3:.1f}x", 0)
+        else:
+            criterios["VOL"] = ("⚪ N/D", 5); score += 5
+
+        # ── C3: RSI — zona correcta (0-15 pts) ──────────────
+        # Queremos RSI saliendo de sobreventa, no sobrecomprado
+        if 25 <= rsi_now <= 48:
+            score += 15; criterios["RSI"] = (f"🟢 SALIENDO SV {rsi_now:.0f}", 15)
+        elif 48 < rsi_now <= 58:
+            score += 10; criterios["RSI"] = (f"🟡 ZONA MEDIA {rsi_now:.0f}", 10)
+        elif rsi_now < 25:
+            score += 8;  criterios["RSI"] = (f"🟡 MUY BAJO {rsi_now:.0f}", 8)
+        elif rsi_now > 70:
+            penalizacion += 15; criterios["RSI"] = (f"🔴 SOBRECOMPRADO {rsi_now:.0f}", 0)
+        else:
+            score += 4;  criterios["RSI"] = (f"⚪ ALTO {rsi_now:.0f}", 4)
+
+        # ── C4: Ruptura EMA21 desde abajo (0-15 pts) ────────
+        cruzando_e21 = (c_prev <= e21.iloc[-2]) and (c_now > e21_now)
+        sobre_e21    = c_now > e21_now
+        e21_gap      = (c_now - e21_now) / (e21_now+1e-10) * 100
+
+        if cruzando_e21:
+            score += 15; criterios["EMA21"] = (f"🟢 ROMPE EMA21 HOY", 15)
+        elif sobre_e21 and e21_gap < 3.0:
+            score += 10; criterios["EMA21"] = (f"🟡 SOBRE EMA21 +{e21_gap:.1f}%", 10)
+        elif sobre_e21 and e21_gap < 8.0:
+            score += 5;  criterios["EMA21"] = (f"⚪ SOBRE EMA21 +{e21_gap:.1f}%", 5)
+        else:
+            penalizacion += 8; criterios["EMA21"] = (f"🔴 BAJO EMA21 {e21_gap:.1f}%", 0)
+
+        # ── C5: Mínimos crecientes — base sólida (0-10 pts) ─
+        lows8  = l.iloc[-8:].values
+        minimos_crecientes = all(lows8[i] <= lows8[i+1] for i in range(len(lows8)-1))
+        minimos_generales  = lows8[-1] > lows8[0]
+
+        if minimos_crecientes:
+            score += 10; criterios["ESTRUCTURA"] = ("🟢 MÍNIMOS CRECIENTES", 10)
+        elif minimos_generales:
+            score += 6;  criterios["ESTRUCTURA"] = ("🟡 BASE FORMÁNDOSE", 6)
+        else:
+            penalizacion += 5; criterios["ESTRUCTURA"] = ("🔴 SIN ESTRUCTURA", 0)
+
+        # ── C6: Kalman — velocidad positiva y acelerando (0-10 pts) ──
+        if not pd.isna(vel_now) and not pd.isna(vel_prev):
+            if vel_now > 0 and vel_now > vel_prev:
+                score += 10; criterios["KALMAN"] = ("🟢 ACELERANDO ↑↑", 10)
+            elif vel_now > 0:
+                score += 6;  criterios["KALMAN"] = ("🟡 POSITIVA ↑", 6)
+            elif vel_now < 0:
+                penalizacion += 5; criterios["KALMAN"] = ("🔴 NEGATIVA ↓", 0)
+            else:
+                criterios["KALMAN"] = ("⚪ PLANA →", 3); score += 3
+        else:
+            criterios["KALMAN"] = ("⚪ N/D", 3); score += 3
+
+        # ── C7: Bollinger — no extendido (0-5 pts) ──────────
+        if 0.1 <= bb_now <= 0.55:
+            score += 5;  criterios["BB"] = (f"🟢 ZONA BAJA {bb_now:.2f}", 5)
+        elif bb_now < 0.1:
+            score += 3;  criterios["BB"] = (f"🟡 MUY BAJO {bb_now:.2f}", 3)
+        elif bb_now > 0.80:
+            penalizacion += 10; criterios["BB"] = (f"🔴 EXTENDIDO {bb_now:.2f}", 0)
+        else:
+            criterios["BB"] = (f"⚪ MEDIO {bb_now:.2f}", 2); score += 2
+
+        # ── SCORE FINAL ──────────────────────────────────────
+        score_final = max(0, min(100, score - penalizacion))
+
+        # ── Clasificación del despegue ───────────────────────
+        criterios_ok = sum(1 for k,v2 in criterios.items() if "🟢" in v2[0])
+        criterios_total = len(criterios)
+
+        if score_final >= 72 and criterios_ok >= 5:
+            fase = "🚀 DESPEGUE CONFIRMADO"
+            fase_col = "#00ff88"
+            confianza = "ALTA"
+        elif score_final >= 58 and criterios_ok >= 4:
+            fase = "⚡ INICIO DE IMPULSO"
+            fase_col = "#44ffaa"
+            confianza = "MEDIA-ALTA"
+        elif score_final >= 45 and criterios_ok >= 3:
+            fase = "👀 PRE-DESPEGUE"
+            fase_col = "#ffaa00"
+            confianza = "MEDIA"
+        else:
+            fase = "⏳ ACUMULANDO"
+            fase_col = "#4488ff"
+            confianza = "BAJA"
+
+        # ── Calcular niveles de entrada ──────────────────────
+        precio_actual = c_now
+        atr_v         = atr_now if not pd.isna(atr_now) else precio_actual*0.02
+
+        entry = precio_actual
+        sl    = max(e21_now * 0.995, precio_actual - 1.3*atr_v)
+        tp1   = precio_actual + 2.0*atr_v
+        tp2   = precio_actual + 4.0*atr_v
+        rr    = (tp1-entry)/(entry-sl+1e-10)  # Risk/Reward
+
+        # Retorno reciente (no debe ser muy alto — queremos el inicio)
+        ret3  = (c_now - c.iloc[-4]) / (c.iloc[-4]+1e-10) * 100 if n > 4 else 0
+        ret1  = (c_now - c_prev) / (c_prev+1e-10) * 100
+
+        # Penalizar si ya subió mucho (no es inicio)
+        if ret3 > 15:
+            score_final = max(0, score_final - 20)
+            criterios["TIMING"] = (f"🔴 YA SUBIÓ {ret3:.1f}%", 0)
+        elif ret3 > 8:
+            score_final = max(0, score_final - 10)
+            criterios["TIMING"] = (f"🟡 SUBIDA {ret3:.1f}%", 0)
+        else:
+            criterios["TIMING"] = (f"🟢 INICIO {ret3:.1f}%", 5)
+            score_final = min(100, score_final + 5)
+
         return {
-            "score": int(np.clip(score, 0, 100)),
-            "rsi": round(rsi, 1),
-            "macd_cruce": (not pd.isna(prev) and prev <= 0 and hist > 0),
-            "bb_pct": round(pct, 3),
-            "vol_ratio": round(vr, 2) if not pd.isna(vr) else 0,
-            "precio": precio,
-            "chg1": round(chg1, 2) if not pd.isna(chg1) else 0,
-            "atr_pct": round(atr, 2) if not pd.isna(atr) else 0,
-            "ema_ok": (e9 > e21),
+            "symbol":       sym,
+            "score":        score_final,
+            "fase":         fase,
+            "fase_col":     fase_col,
+            "confianza":    confianza,
+            "precio":       precio_actual,
+            "ret1":         round(ret1, 2),
+            "ret3":         round(ret3, 2),
+            "rsi":          round(rsi_now, 1),
+            "vol_spike":    round(vol_max3, 2) if not pd.isna(vol_max3) else 0,
+            "bb_pct":       round(bb_now, 3),
+            "e21_gap":      round(e21_gap, 2),
+            "cruce_macd":   cruce_hoy or cruce_ayer,
+            "cruce_e21":    cruzando_e21,
+            "min_crecientes": minimos_crecientes,
+            "entry":        entry,
+            "sl":           sl,
+            "tp1":          tp1,
+            "tp2":          tp2,
+            "rr":           round(rr, 2),
+            "criterios":    criterios,
+            "criterios_ok": criterios_ok,
+            "atr_pct":      round(atr_v/precio_actual*100, 2) if precio_actual > 0 else 0,
         }
-    except:
+    except Exception as e:
         return None
 
 
-# Lista de pares para escanear
-SCAN_PARES_BINANCE = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT",
-    "ADAUSDT","AVAXUSDT","DOTUSDT","MATICUSDT","LINKUSDT","LTCUSDT",
-    "UNIUSDT","ATOMUSDT","NEARUSDT","APTUSDT","ARBUSDT","OPUSDT",
-    "INJUSDT","SUIUSDT","SEIUSDT","TIAUSDT","WIFUSDT","PEPEUSDT",
-    "FLOKIUSDT","BONKUSDT","FETUSDT","RENDERUSDT","IMXUSDT","GMXUSDT",
-]
-
-SCAN_PARES_YAHOO = [
-    "NVDA","AAPL","TSLA","AMD","META","MSFT","AMZN","GOOGL",
-    "SPY","QQQ","ARKK","COIN","MSTR","RIOT","MARA",
-]
-
-
-def ejecutar_scanner(pares, fuente_scan, interval_scan, dias_scan, progreso_bar):
+def ejecutar_scanner_despegue(pares, interval_bn, dias, progreso_bar):
+    """Escanea todos los pares y retorna solo los que están despegando."""
     resultados = []
     total = len(pares)
     for i, sym in enumerate(pares):
-        progreso_bar.progress((i + 1) / total, text=f"Escaneando {sym}...")
+        progreso_bar.progress((i+1)/total, text=f"🔭 Analizando {sym} ({i+1}/{total})...")
         try:
-            if fuente_scan == "binance":
-                df_s = binance_descargar(sym, interval_scan, dias_scan)
-            else:
-                pm = {10: "1mo", 30: "1mo", 90: "3mo"}
-                df_s = yahoo_descargar(sym, "1d", dias_scan)
-
-            res = scanner_score_rapido(df_s)
-            if res and res["score"] >= 35:
-                res["symbol"] = sym
-                res["fuente"] = fuente_scan
+            df_s = binance_descargar(sym, interval_bn, dias)
+            res  = analizar_despegue(df_s, sym)
+            if res and res["score"] >= 40:
                 resultados.append(res)
         except:
             pass
-        time.sleep(0.05)  # evitar rate limit
+        time.sleep(0.08)
 
     resultados.sort(key=lambda x: x["score"], reverse=True)
     return resultados
 
 
-# ── UI del Scanner ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  UI DEL SCANNER DE DESPEGUE
+# ══════════════════════════════════════════════════════════════
 st.sidebar.divider()
-st.sidebar.markdown("**🔭 SCANNER**")
-run_scanner = st.sidebar.button("🔭 ESCANEAR CRIPTOS", use_container_width=True)
+st.sidebar.markdown("**🚀 SCANNER DE DESPEGUE**")
+
+with st.sidebar:
+    tf_scan_opt = st.selectbox("⏱ TF Scanner:",
+                               ["1H · 3 días", "4H · 10 días", "1D · 30 días", "1D · 90 días"],
+                               key="tf_scan_sel")
+    min_score_scan = st.slider("Score mínimo:", 40, 85, 58, key="sc_min_scan")
+    run_scanner = st.sidebar.button("🚀 BUSCAR DESPEGUES", use_container_width=True)
 
 if run_scanner:
     st.divider()
-    st.markdown("## 🔭 SCANNER DE OPORTUNIDADES")
-    st.caption("Analiza los principales pares con los mismos algoritmos del motor principal.")
+    st.markdown("## 🚀 SCANNER DE DESPEGUE CUÁNTICO")
+    st.markdown("""
+    <div style="background:#080c18;border:1px solid #1a2a4a;border-radius:8px;padding:12px 16px;
+                font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#7aabff;margin-bottom:12px">
+        <b style="color:#4488ff">¿Qué busca este scanner?</b><br>
+        Criptos que <b>ACABAN de iniciar</b> un impulso sólido — no las que ya subieron.<br>
+        Criterios: Cruce MACD reciente · Volumen spike · RSI saliendo de sobreventa ·
+        Ruptura EMA21 · Mínimos crecientes · Kalman acelerando · BB no extendido
+    </div>
+    """, unsafe_allow_html=True)
 
-    tab_bn, tab_yf = st.tabs(["🟡 Binance (Crypto)", "📈 Acciones (Yahoo)"])
+    tf_map_sc = {
+        "1H · 3 días":   ("1h",  3),
+        "4H · 10 días":  ("4h", 10),
+        "1D · 30 días":  ("1d", 30),
+        "1D · 90 días":  ("1d", 90),
+    }
+    iv_sc, d_sc = tf_map_sc[tf_scan_opt]
 
-    with tab_bn:
-        sc1, sc2, sc3 = st.columns(3)
-        with sc1:
-            tf_scan = st.selectbox("Timeframe scanner:",
-                                   ["1h · 3d", "4h · 10d", "1d · 30d", "1d · 90d"],
-                                   key="tf_scan_bn")
-        with sc2:
-            min_score = st.slider("Score mínimo:", 40, 85, 55, key="ms_bn")
-        with sc3:
-            top_n = st.slider("Top N resultados:", 5, 30, 10, key="topn_bn")
+    prog_sc = st.progress(0, text="Iniciando scanner...")
+    t_inicio = time.time()
+    resultados_sc = ejecutar_scanner_despegue(SCAN_PARES_BINANCE, iv_sc, d_sc, prog_sc)
+    t_total = time.time() - t_inicio
+    prog_sc.empty()
 
-        tf_map_scan = {
-            "1h · 3d":  ("1h",  3),
-            "4h · 10d": ("4h", 10),
-            "1d · 30d": ("1d", 30),
-            "1d · 90d": ("1d", 90),
-        }
-        iv_s, d_s = tf_map_scan[tf_scan]
+    resultados_filtrados = [r for r in resultados_sc if r["score"] >= min_score_scan]
 
-        prog = st.progress(0, text="Iniciando scanner...")
-        with st.spinner("Escaneando mercado cripto..."):
-            res_bn = ejecutar_scanner(SCAN_PARES_BINANCE, "binance", iv_s, d_s, prog)
-        prog.empty()
+    st.caption(f"Escaneados: {len(SCAN_PARES_BINANCE)} pares · Tiempo: {t_total:.0f}s · Encontrados: {len(resultados_filtrados)}")
 
-        res_bn_f = [r for r in res_bn if r["score"] >= min_score][:top_n]
+    if not resultados_filtrados:
+        st.info("🔍 No se encontraron despegues con ese score mínimo ahora. El mercado puede estar en acumulación o distribución. Baja el score o cambia el timeframe.")
+    else:
+        # ── Gráfico visual de oportunidades ─────────────────
+        fig_sc = plt.figure(figsize=(14, 5), facecolor=BG)
+        ax_sc  = fig_sc.add_subplot(1,1,1); estilizar_ax(ax_sc)
+        top_vis = resultados_filtrados[:20]
+        syms_v  = [r["symbol"].replace("USDT","") for r in top_vis]
+        scrs_v  = [r["score"] for r in top_vis]
+        cols_v  = []
+        for r in top_vis:
+            if r["score"] >= 72:   cols_v.append("#00ff88")
+            elif r["score"] >= 58: cols_v.append("#44ffaa")
+            elif r["score"] >= 45: cols_v.append("#ffaa00")
+            else:                  cols_v.append("#4488ff")
+        bars_v = ax_sc.bar(syms_v, scrs_v, color=cols_v, alpha=0.85, width=0.65, zorder=3)
+        for bar, sc_v, r in zip(bars_v, scrs_v, top_vis):
+            ax_sc.text(bar.get_x()+bar.get_width()/2, bar.get_height()+0.8,
+                      f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
+            ax_sc.text(bar.get_x()+bar.get_width()/2, bar.get_height()/2,
+                      r["fase"].split()[0], ha="center", va="center", color="white", fontsize=10)
+        ax_sc.axhline(72, color="#00ff88", lw=1.2, ls="--", alpha=0.7, label="🚀 Despegue")
+        ax_sc.axhline(58, color="#ffaa00", lw=1,   ls="--", alpha=0.5, label="⚡ Impulso")
+        ax_sc.set_ylim(0, 110); ax_sc.set_ylabel("Score Despegue", color="#2a4060", fontsize=8)
+        ax_sc.set_title(f"Scanner de Despegue — {tf_scan_opt} — {len(top_vis)} mejores oportunidades",
+                       color="#4488ff", fontsize=10)
+        ax_sc.legend(fontsize=7, framealpha=0.3)
+        ax_sc.tick_params(axis="x", labelrotation=35, labelsize=8, colors="#4a6080")
+        ax_sc.grid(axis="y", color="#0d1a2e", lw=0.5, alpha=0.5)
+        plt.tight_layout(); render_fig(fig_sc)
 
-        if not res_bn_f:
-            st.info("No se encontraron oportunidades con ese score mínimo. Baja el filtro.")
-        else:
-            st.markdown(f"**{len(res_bn_f)} oportunidades encontradas:**")
+        # ── TABS por fase ────────────────────────────────────
+        despegues   = [r for r in resultados_filtrados if "DESPEGUE" in r["fase"]]
+        impulsos    = [r for r in resultados_filtrados if "IMPULSO" in r["fase"]]
+        pre_despegues=[r for r in resultados_filtrados if "PRE" in r["fase"]]
+        acumulando  = [r for r in resultados_filtrados if "ACUMUL" in r["fase"]]
 
-            # Gráfico de barras de scores
-            fig_sc = plt.figure(figsize=(14, 4), facecolor=BG)
-            ax_sc = fig_sc.add_subplot(1, 1, 1); estilizar_ax(ax_sc)
-            syms_sc  = [r["symbol"] for r in res_bn_f]
-            scores_sc = [r["score"] for r in res_bn_f]
-            cols_sc  = ["#00ff88" if s >= 70 else ("#ffaa00" if s >= 55 else "#4488ff") for s in scores_sc]
-            bars_sc  = ax_sc.bar(syms_sc, scores_sc, color=cols_sc, alpha=0.85, width=0.6)
-            for bar, sc_v in zip(bars_sc, scores_sc):
-                ax_sc.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-                           f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
-            ax_sc.axhline(70, color="#00ff88", lw=1, ls="--", alpha=0.6, label="Zona compra")
-            ax_sc.axhline(55, color="#ffaa00", lw=1, ls="--", alpha=0.5, label="Vigilar")
-            ax_sc.set_ylim(0, 105)
-            ax_sc.set_title("Score por Par — Scanner Cuántico", color="#4488ff", fontsize=10)
-            ax_sc.legend(fontsize=7, framealpha=0.3)
-            ax_sc.tick_params(axis="x", labelrotation=30, labelsize=8, colors="#4a6080")
-            plt.tight_layout(); render_fig(fig_sc)
+        tab_labels = []
+        if despegues:    tab_labels.append(f"🚀 Despegue ({len(despegues)})")
+        if impulsos:     tab_labels.append(f"⚡ Impulso ({len(impulsos)})")
+        if pre_despegues:tab_labels.append(f"👀 Pre-Despegue ({len(pre_despegues)})")
+        if acumulando:   tab_labels.append(f"⏳ Acumulando ({len(acumulando)})")
+        if not tab_labels: tab_labels = ["📋 Resultados"]
 
-            # Tabla detallada
-            rows = []
-            for r in res_bn_f:
-                pf = r["precio"]
-                precio_fmt = f"${pf:,.6f}" if pf < 1 else f"${pf:,.4f}" if pf < 10 else f"${pf:,.2f}"
-                score_emoji = "🟢" if r["score"] >= 70 else ("🟡" if r["score"] >= 55 else "🔵")
-                rows.append({
-                    "Par":        r["symbol"],
-                    "Score":      f"{score_emoji} {r['score']}/100",
-                    "Precio":     precio_fmt,
-                    "Chg 1p":     f"{r['chg1']:+.2f}%",
-                    "RSI":        r["rsi"],
-                    "BB %B":      r["bb_pct"],
-                    "Vol Ratio":  f"{r['vol_ratio']}x",
-                    "ATR%":       f"{r['atr_pct']}%",
-                    "MACD Cruce": "✅" if r["macd_cruce"] else "—",
-                    "EMA OK":     "✅" if r["ema_ok"] else "—",
-                })
-            df_tabla = pd.DataFrame(rows)
-            st.dataframe(df_tabla, use_container_width=True, hide_index=True)
+        tabs_sc = st.tabs(tab_labels)
+        grupos  = [g for g in [despegues,impulsos,pre_despegues,acumulando] if g]
 
-            # Cards de las top 3
-            st.markdown("**🏆 Top 3 mejores entradas:**")
-            top3_cols = st.columns(3)
-            for i, r in enumerate(res_bn_f[:3]):
-                pf = r["precio"]
-                precio_fmt = f"${pf:,.6f}" if pf < 1 else f"${pf:,.4f}" if pf < 10 else f"${pf:,.2f}"
-                sc_c = "#00ff88" if r["score"] >= 70 else "#ffaa00"
-                indicadores_str = []
-                if r["macd_cruce"]: indicadores_str.append("MACD✅")
-                if r["rsi"] < 35:   indicadores_str.append(f"RSI({r['rsi']}✅)")
-                if r["bb_pct"] < 0.2: indicadores_str.append("BB✅")
-                if r["ema_ok"]:     indicadores_str.append("EMA✅")
-                if r["vol_ratio"] > 1.5: indicadores_str.append(f"Vol({r['vol_ratio']}x✅)")
-                top3_cols[i].markdown(f"""
-                <div class="mc" style="border-left:3px solid {sc_c};padding:12px">
-                    <div style="font-family:'Orbitron',monospace;font-size:1rem;color:{sc_c};font-weight:700">{r['symbol']}</div>
-                    <div class="mv" style="color:{sc_c};font-size:1.4rem">{r['score']}/100</div>
-                    <div style="color:#c0d8ff;font-size:0.82rem;margin:4px 0">{precio_fmt} <span style="color:{'#00ff88' if r['chg1']>0 else '#ff3355'}">{r['chg1']:+.2f}%</span></div>
-                    <div style="color:#4a6080;font-size:0.72rem">{' · '.join(indicadores_str) if indicadores_str else 'Señal técnica'}</div>
+        for tab_i, (tab_obj, grupo) in enumerate(zip(tabs_sc, grupos)):
+            with tab_obj:
+                # Cards top 3 de cada grupo
+                top3 = grupo[:3]
+                card_cols = st.columns(len(top3)) if len(top3) <= 3 else st.columns(3)
+                for i, r in enumerate(top3):
+                    pf = r["precio"]
+                    pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
+                    # Criterios OK en badges
+                    badges = []
+                    for k,v2 in r["criterios"].items():
+                        if "🟢" in v2[0]: badges.append(f"<span style='color:#00ff88;font-size:0.72rem'>{k}✅</span>")
+                    badges_html = " ".join(badges[:5])
+                    rr_col = "#00ff88" if r["rr"] >= 2 else ("#ffaa00" if r["rr"] >= 1.5 else "#ff3355")
+                    card_cols[i].markdown(f"""
+                    <div style="background:#08090f;border:1px solid {r['fase_col']};border-radius:10px;
+                                padding:14px;font-family:'Share Tech Mono',monospace">
+                        <div style="font-family:'Orbitron',monospace;font-size:1.1rem;
+                                    color:{r['fase_col']};font-weight:700">{r['symbol'].replace('USDT','/USDT')}</div>
+                        <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">{r['fase']}</div>
+                        <div style="font-size:1.5rem;font-weight:700;color:{r['fase_col']}">{r['score']}/100</div>
+                        <div style="color:#c0d8ff;margin:4px 0">{pfmt}
+                            <span style="color:{'#00ff88' if r['ret1']>0 else '#ff3355'}">{r['ret1']:+.2f}%</span>
+                        </div>
+                        <div style="margin:6px 0">{badges_html}</div>
+                        <div style="color:#2a4060;font-size:0.7rem;border-top:1px solid #0d1a2e;padding-top:6px;margin-top:6px">
+                            Entry: <span style="color:#00ff88">{pfmt}</span><br>
+                            SL: <span style="color:#ff3355">{fp(r['sl'])}</span>
+                            TP1: <span style="color:#ffaa00">{fp(r['tp1'])}</span>
+                            TP2: <span style="color:#ffdd44">{fp(r['tp2'])}</span><br>
+                            R/R: <span style="color:{rr_col}">{r['rr']:.1f}x</span>
+                            · ATR: {r['atr_pct']}%
+                            · Conf: <b style="color:{r['fase_col']}">{r['confianza']}</b>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+
+                st.markdown("&nbsp;")
+
+                # Tabla completa del grupo
+                filas = []
+                for r in grupo:
+                    pf = r["precio"]
+                    pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
+                    ok_str = " ".join([k for k,v2 in r["criterios"].items() if "🟢" in v2[0]])
+                    filas.append({
+                        "Par":         r["symbol"].replace("USDT","/USDT"),
+                        "Score":       r["score"],
+                        "Fase":        r["fase"],
+                        "Precio":      pfmt,
+                        "Chg 1v":     f"{r['ret1']:+.2f}%",
+                        "Chg 3v":     f"{r['ret3']:+.2f}%",
+                        "RSI":         r["rsi"],
+                        "Vol Spike":  f"{r['vol_spike']}x",
+                        "BB %B":       r["bb_pct"],
+                        "R/R":         r["rr"],
+                        "OK":          ok_str,
+                        "MACD Cruce": "✅" if r["cruce_macd"] else "—",
+                        "EMA21 Rota": "✅" if r["cruce_e21"] else "—",
+                        "Mín. Crec.": "✅" if r["min_crecientes"] else "—",
+                    })
+                if filas:
+                    df_tab = pd.DataFrame(filas)
+                    # Colorear score
+                    st.dataframe(df_tab, use_container_width=True, hide_index=True,
+                                column_config={
+                                    "Score": st.column_config.ProgressColumn(
+                                        "Score", min_value=0, max_value=100, format="%d"),
+                                    "R/R": st.column_config.NumberColumn("R/R", format="%.1f"),
+                                })
+
+        # ── Radar de criterios del #1 ────────────────────────
+        if resultados_filtrados:
+            st.divider()
+            st.markdown("### 🎯 Diagnóstico detallado — Mejor oportunidad")
+            top1 = resultados_filtrados[0]
+            st.markdown(f"**{top1['symbol']} — Score: {top1['score']}/100 — {top1['fase']}**")
+            crit_cols = st.columns(len(top1["criterios"]))
+            for i, (k, v2) in enumerate(top1["criterios"].items()):
+                label, pts = v2
+                col_c = "#00ff88" if "🟢" in label else ("#ffaa00" if "🟡" in label else "#ff3355")
+                crit_cols[i].markdown(f"""
+                <div style="background:#08090f;border:1px solid {col_c};border-radius:8px;
+                            padding:8px;text-align:center;font-family:'Share Tech Mono',monospace">
+                    <div style="font-size:0.65rem;color:#4a6080">{k}</div>
+                    <div style="font-size:0.78rem;color:{col_c}">{label}</div>
+                    <div style="font-size:1rem;font-weight:700;color:{col_c}">{pts}pts</div>
                 </div>""", unsafe_allow_html=True)
 
-    with tab_yf:
-        sc1y, sc2y = st.columns(2)
-        with sc1y:
-            min_score_y = st.slider("Score mínimo:", 40, 85, 55, key="ms_yf")
-        with sc2y:
-            top_n_y = st.slider("Top N:", 5, 15, 8, key="topn_yf")
-
-        prog_y = st.progress(0, text="Iniciando scanner acciones...")
-        with st.spinner("Escaneando acciones..."):
-            res_yf_scan = ejecutar_scanner(SCAN_PARES_YAHOO, "yahoo", "1d", 90, prog_y)
-        prog_y.empty()
-
-        res_yf_f = [r for r in res_yf_scan if r["score"] >= min_score_y][:top_n_y]
-
-        if not res_yf_f:
-            st.info("No se encontraron oportunidades. Baja el filtro.")
-        else:
-            st.markdown(f"**{len(res_yf_f)} oportunidades encontradas:**")
-
-            fig_scy = plt.figure(figsize=(14, 4), facecolor=BG)
-            ax_scy = fig_scy.add_subplot(1, 1, 1); estilizar_ax(ax_scy)
-            syms_y  = [r["symbol"] for r in res_yf_f]
-            scrs_y  = [r["score"]  for r in res_yf_f]
-            cols_y  = ["#00ff88" if s >= 70 else ("#ffaa00" if s >= 55 else "#4488ff") for s in scrs_y]
-            bars_y  = ax_scy.bar(syms_y, scrs_y, color=cols_y, alpha=0.85, width=0.5)
-            for bar, sc_v in zip(bars_y, scrs_y):
-                ax_scy.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-                            f"{sc_v}", ha="center", va="bottom", color="white", fontsize=8, fontweight="bold")
-            ax_scy.axhline(70, color="#00ff88", lw=1, ls="--", alpha=0.6)
-            ax_scy.set_ylim(0, 105)
-            ax_scy.set_title("Score Acciones — Scanner", color="#4488ff", fontsize=10)
-            ax_scy.tick_params(axis="x", labelsize=9, colors="#4a6080")
-            plt.tight_layout(); render_fig(fig_scy)
-
-            rows_y = []
-            for r in res_yf_f:
-                pf = r["precio"]
-                rows_y.append({
-                    "Ticker":     r["symbol"],
-                    "Score":      f"{'🟢' if r['score']>=70 else '🟡'} {r['score']}/100",
-                    "Precio":     f"${pf:,.2f}",
-                    "Chg 1p":     f"{r['chg1']:+.2f}%",
-                    "RSI":        r["rsi"],
-                    "BB %B":      r["bb_pct"],
-                    "Vol Ratio":  f"{r['vol_ratio']}x",
-                    "MACD Cruce": "✅" if r["macd_cruce"] else "—",
-                })
-            st.dataframe(pd.DataFrame(rows_y), use_container_width=True, hide_index=True)
+        # ── Consejo de gestión de riesgo ─────────────────────
+        st.markdown("""
+        <div style="background:#0d1428;border-left:3px solid #ffaa00;border-radius:6px;
+                    padding:12px 16px;margin-top:12px;font-family:'Share Tech Mono',monospace;
+                    font-size:0.78rem;color:#ffaa00">
+            <b>⚠️ GESTIÓN DE RIESGO:</b><br>
+            · Usa máximo 2-5% de tu capital por operación<br>
+            · Respeta siempre el Stop Loss sugerido<br>
+            · Al llegar a TP1 → mueve SL a breakeven<br>
+            · En cripto volátil: prefiere entradas en pullback al EMA21<br>
+            · Score ≥ 72 + R/R ≥ 2x = mejores condiciones de entrada
+        </div>
+        """, unsafe_allow_html=True)
