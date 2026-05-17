@@ -1749,532 +1749,602 @@ if run_cg:
                                 "ATR%":     st.column_config.NumberColumn("ATR%",     format="%.2f"),
                             })
 
-            # ── SELECTOR → ANÁLISIS COMPLETO ──────────────
+            # ── SELECTOR → ANÁLISIS + AGREGAR AL LIVE ──────
             st.divider()
-            st.markdown("### 🎯 Abrir en motor principal")
+            st.markdown("### 🎯 Seleccionar par")
             opciones_sel = [
-                f"{r['symbol']}/USDT — Score {r['score']} · {r['estado']} · 24H: {r['chg24h']:+.1f}%"
+                f"{r['symbol']} — Score {r['score']} · {r['estado']} · 24H: {r['chg24h']:+.1f}%"
                 for r in resultados_cg
             ]
-            sel_par = st.selectbox("Elige un par para análisis completo:", opciones_sel, key="sel_cg")
+            sel_col1, sel_col2, sel_col3 = st.columns([3,1,1])
+            sel_par = sel_col1.selectbox(
+                "Elige un par:",
+                opciones_sel, key="sel_cg",
+                label_visibility="collapsed"
+            )
             if sel_par:
-                sym_sel = sel_par.split(" —")[0].replace("/USDT","")
-                st.info(f"✅ **{sym_sel}** seleccionado — Escríbelo en el buscador del sidebar y presiona **⚛️ ANALIZAR v4**")
+                sym_sel = sel_par.split(" —")[0].strip()
+                # Botón: agregar al monitor Live
+                if sel_col2.button("📡 Agregar al Live", key="add_live_btn"):
+                    st.session_state.agregar_a_live = sym_sel
+                    st.success(f"✅ **{sym_sel}** agregado al monitor Live")
+                # Botón: abrir en motor principal
+                if sel_col3.button("⚛️ Analizar", key="analizar_btn"):
+                    st.info(f"Escribe **{sym_sel}** en el buscador del sidebar → presiona ⚛️ ANALIZAR v4")
+
 
 
 # ══════════════════════════════════════════════════════════════
-# 📡 AI.LINO LIVE — MONITOR EN TIEMPO REAL
-#    Muestra el estado AHORA de cada par en 3 secciones:
-#    ✅ CASCADA FUERTE · ⚠️ PERDIENDO FUERZA · 🔴 CASCADA BAJISTA
-#    Se refresca automáticamente cada N segundos.
+# 📡 AI.LINO LIVE v2 — Monitor en Tiempo Real
+#    Mejoras: fix HTML · Supabase · Scanner→Live · Auto-análisis
 # ══════════════════════════════════════════════════════════════
+import os
 
-LIVE_PARES = [
-    ("bitcoin",           "BTC"),
-    ("ethereum",          "ETH"),
-    ("solana",            "SOL"),
-    ("ripple",            "XRP"),
-    ("dogecoin",          "DOGE"),
-    ("cardano",           "ADA"),
-    ("avalanche-2",       "AVAX"),
-    ("chainlink",         "LINK"),
-    ("near",              "NEAR"),
-    ("injective-protocol","INJ"),
-    ("aptos",             "APT"),
-    ("arbitrum",          "ARB"),
-    ("optimism",          "OP"),
-    ("sui",               "SUI"),
-    ("uniswap",           "UNI"),
-    ("aave",              "AAVE"),
-    ("fetch-ai",          "FET"),
-    ("matic-network",     "MATIC"),
-    ("shiba-inu",         "SHIB"),
-    ("pepe",              "PEPE"),
+# ── Supabase (opcional — funciona sin él también) ────────────
+try:
+    from supabase import create_client
+    SUPA_URL = os.environ.get("SUPABASE_URL", "")
+    SUPA_KEY = os.environ.get("SUPABASE_KEY", "")
+    if SUPA_URL and SUPA_KEY:
+        supa = create_client(SUPA_URL, SUPA_KEY)
+        SUPA_OK = True
+    else:
+        SUPA_OK = False
+except:
+    SUPA_OK = False
+
+# ── Lista base de pares disponibles en Bitso ─────────────────
+LIVE_PARES_BASE = [
+    ("bitcoin",            "BTC"),
+    ("ethereum",           "ETH"),
+    ("solana",             "SOL"),
+    ("ripple",             "XRP"),
+    ("dogecoin",           "DOGE"),
+    ("cardano",            "ADA"),
+    ("avalanche-2",        "AVAX"),
+    ("chainlink",          "LINK"),
+    ("near",               "NEAR"),
+    ("injective-protocol", "INJ"),
+    ("aptos",              "APT"),
+    ("arbitrum",           "ARB"),
+    ("optimism",           "OP"),
+    ("sui",                "SUI"),
+    ("uniswap",            "UNI"),
+    ("aave",               "AAVE"),
+    ("fetch-ai",           "FET"),
+    ("matic-network",      "MATIC"),
+    ("shiba-inu",          "SHIB"),
+    ("pepe",               "PEPE"),
 ]
 
+# Mapa id→sym para búsqueda rápida
+LIVE_ID_MAP = {cid: sym for cid, sym in LIVE_PARES_BASE}
+LIVE_SYM_MAP= {sym: cid for cid, sym in LIVE_PARES_BASE}
 
+# ── Supabase helpers ──────────────────────────────────────────
+def supa_cargar_watchlist():
+    """Carga la watchlist guardada en Supabase."""
+    if not SUPA_OK:
+        return list(LIVE_PARES_BASE)
+    try:
+        res = supa.table("live_watchlist").select("*").execute()
+        if res.data:
+            return [(r["coin_id"], r["symbol"]) for r in res.data]
+    except:
+        pass
+    return list(LIVE_PARES_BASE)
+
+def supa_guardar_watchlist(pares):
+    """Guarda la watchlist en Supabase."""
+    if not SUPA_OK:
+        return False
+    try:
+        supa.table("live_watchlist").delete().neq("coin_id","__none__").execute()
+        rows = [{"coin_id": cid, "symbol": sym} for cid, sym in pares]
+        supa.table("live_watchlist").insert(rows).execute()
+        return True
+    except:
+        return False
+
+def supa_guardar_alerta(sym, tipo, precio, score):
+    """Guarda alertas en Supabase para historial."""
+    if not SUPA_OK:
+        return
+    try:
+        supa.table("live_alertas").insert({
+            "symbol":    sym,
+            "tipo":      tipo,
+            "precio":    float(precio),
+            "score":     int(score),
+            "timestamp": datetime.utcnow().isoformat(),
+        }).execute()
+    except:
+        pass
+
+# ── Inicializar watchlist en session_state ────────────────────
+if "live_watchlist" not in st.session_state:
+    st.session_state.live_watchlist = supa_cargar_watchlist()
+
+if "live_alertas" not in st.session_state:
+    st.session_state.live_alertas = []  # alertas de esta sesión
+
+
+# ══════════════════════════════════════════════════════════════
+#  INDICADORES PARA LIVE
+# ══════════════════════════════════════════════════════════════
 def calcular_adx(h, l, c, period=14):
-    """
-    ADX + DI+/DI- — mide fuerza de la tendencia.
-    ADX > 25 = tendencia fuerte.
-    DI+ > DI- = tendencia alcista.
-    """
     n = len(c)
     if n < period + 2:
-        return pd.Series([np.nan]*n), pd.Series([np.nan]*n), pd.Series([np.nan]*n)
+        return pd.Series([np.nan]*n, index=c.index), \
+               pd.Series([np.nan]*n, index=c.index), \
+               pd.Series([np.nan]*n, index=c.index)
+    tr   = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+    dm_p = h.diff().clip(lower=0)
+    dm_n = (-l.diff()).clip(lower=0)
+    dm_p = dm_p.where(dm_p > dm_n, 0)
+    dm_n = dm_n.where(dm_n > dm_p, 0)
+    atr14= tr.ewm(span=period, adjust=False).mean()
+    dip  = (dm_p.ewm(span=period,adjust=False).mean()/(atr14+1e-10))*100
+    dim  = (dm_n.ewm(span=period,adjust=False).mean()/(atr14+1e-10))*100
+    dx   = ((dip-dim).abs()/(dip+dim+1e-10))*100
+    adx  = dx.ewm(span=period, adjust=False).mean()
+    return adx, dip, dim
 
-    tr  = pd.concat([h - l,
-                     (h - c.shift()).abs(),
-                     (l - c.shift()).abs()], axis=1).max(axis=1)
+def pendiente_ema(ema_s, v=4):
+    if len(ema_s) < v+1: return 0.0
+    return round((ema_s.values[-1]-ema_s.values[-v])/(ema_s.values[-v]+1e-10)*100, 3)
 
-    dm_pos = h.diff().clip(lower=0)
-    dm_neg = (-l.diff()).clip(lower=0)
-    # Si DM+ < DM- → DM+ = 0, viceversa
-    dm_pos = dm_pos.where(dm_pos > dm_neg, 0)
-    dm_neg = dm_neg.where(dm_neg > dm_pos, 0)
-
-    atr14   = tr.ewm(span=period,  adjust=False).mean()
-    di_pos  = (dm_pos.ewm(span=period, adjust=False).mean() / (atr14+1e-10)) * 100
-    di_neg  = (dm_neg.ewm(span=period, adjust=False).mean() / (atr14+1e-10)) * 100
-    dx      = ((di_pos - di_neg).abs() / (di_pos + di_neg + 1e-10)) * 100
-    adx     = dx.ewm(span=period, adjust=False).mean()
-
-    return adx, di_pos, di_neg
-
-
-def calcular_pendiente_ema(ema_series, ventana=4):
-    """
-    Pendiente porcentual de una EMA en las últimas N velas.
-    Positiva = subiendo, negativa = bajando.
-    """
-    if len(ema_series) < ventana + 1:
-        return 0.0
-    vals = ema_series.values
-    pend = (vals[-1] - vals[-ventana]) / (vals[-ventana] + 1e-10) * 100
-    return round(pend, 3)
+def pendiente_ant(ema_s, v=4, off=2):
+    if len(ema_s) < v+off+1: return 0.0
+    return (ema_s.values[-1-off]-ema_s.values[-v-off])/(ema_s.values[-v-off]+1e-10)*100
 
 
-@st.cache_data(ttl=60)   # refresca cada 60 segundos
-def live_get_markets():
-    """Precios en tiempo real desde CoinGecko."""
-    ids = ",".join([c[0] for c in LIVE_PARES])
+@st.cache_data(ttl=55)
+def live_get_markets(ids_str):
     try:
         r = requests.get(f"{CG}/coins/markets", params={
-            "vs_currency": "usd",
-            "ids": ids,
-            "order": "market_cap_desc",
-            "per_page": 50,
-            "price_change_percentage": "1h,24h",
-            "sparkline": "false",
+            "vs_currency":"usd", "ids":ids_str,
+            "order":"market_cap_desc", "per_page":50,
+            "price_change_percentage":"1h,24h", "sparkline":"false",
         }, timeout=12)
-        return r.json() if r.status_code == 200 else []
-    except:
-        return []
+        return r.json() if r.status_code==200 else []
+    except: return []
 
-
-@st.cache_data(ttl=90)
+@st.cache_data(ttl=85)
 def live_get_ohlc(coin_id):
-    """OHLC 7 días (velas 4H) para indicadores."""
     try:
-        r = requests.get(f"{CG}/coins/{coin_id}/ohlc", params={
-            "vs_currency": "usd",
-            "days": 7,
-        }, timeout=10)
-        if r.status_code != 200 or not r.json():
-            return None
+        r = requests.get(f"{CG}/coins/{coin_id}/ohlc",
+                        params={"vs_currency":"usd","days":7}, timeout=10)
+        if r.status_code!=200 or not r.json(): return None
         df = pd.DataFrame(r.json(), columns=["ts","Open","High","Low","Close"])
         df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
         df.set_index("ts", inplace=True)
         return df.astype(float)
-    except:
-        return None
+    except: return None
 
 
 def analizar_live(coin_id, sym, mkt):
-    """
-    Análisis live completo para una moneda.
-    Retorna dict con todos los campos para la card.
-    """
     try:
-        precio   = mkt.get("current_price", 0) or 0
-        chg1h    = mkt.get("price_change_percentage_1h_in_currency", 0) or 0
-        chg24h   = mkt.get("price_change_percentage_24h", 0) or 0
+        precio  = mkt.get("current_price", 0) or 0
+        chg1h   = mkt.get("price_change_percentage_1h_in_currency", 0) or 0
+        chg24h  = mkt.get("price_change_percentage_24h", 0) or 0
+        if precio <= 0: return None
 
         df = live_get_ohlc(coin_id)
-        if df is None or len(df) < 15:
-            return None
+        if df is None or len(df) < 15: return None
 
-        c = df["Close"]; h = df["High"]; l = df["Low"]
+        c=df["Close"]; h=df["High"]; l=df["Low"]; o=df["Open"]
 
-        # ── EMAs ─────────────────────────────────────────────
         e9  = c.ewm(span=9,  adjust=False).mean()
         e21 = c.ewm(span=21, adjust=False).mean()
         e50 = c.ewm(span=50, adjust=False).mean()
 
-        pend9  = calcular_pendiente_ema(e9,  4)
-        pend21 = calcular_pendiente_ema(e21, 4)
-        pend50 = calcular_pendiente_ema(e50, 4)
+        p9=pendiente_ema(e9); p21=pendiente_ema(e21); p50=pendiente_ema(e50)
+        pa9=pendiente_ant(e9); pa21=pendiente_ant(e21)
 
-        # ── RSI ───────────────────────────────────────────────
-        d   = c.diff()
-        g   = d.clip(lower=0).ewm(com=6, adjust=False).mean()
-        ls  = (-d.clip(upper=0)).ewm(com=6, adjust=False).mean()
-        rsi = float((100-(100/(1+g/(ls+1e-10)))).iloc[-1])
-        rsi = round(rsi, 1) if not np.isnan(rsi) else 50.0
+        d=c.diff(); g=d.clip(lower=0).ewm(com=6,adjust=False).mean()
+        ls=(-d.clip(lower=0)).ewm(com=6,adjust=False).mean()
+        rsi=float((100-(100/(1+g/(ls.clip(lower=1e-10))))).iloc[-1])
+        rsi=round(rsi,1) if not np.isnan(rsi) else 50.0
 
-        # ── ADX ───────────────────────────────────────────────
-        adx_s, dip_s, dim_s = calcular_adx(h, l, c, 14)
-        adx = round(float(adx_s.iloc[-1]), 1) if not np.isnan(adx_s.iloc[-1]) else 0
-        dip = round(float(dip_s.iloc[-1]), 1) if not np.isnan(dip_s.iloc[-1]) else 0
-        dim = round(float(dim_s.iloc[-1]), 1) if not np.isnan(dim_s.iloc[-1]) else 0
+        adx_s,dip_s,dim_s=calcular_adx(h,l,c)
+        adx=round(float(adx_s.iloc[-1]),1) if not np.isnan(adx_s.iloc[-1]) else 0
+        dip=round(float(dip_s.iloc[-1]),1) if not np.isnan(dip_s.iloc[-1]) else 0
+        dim=round(float(dim_s.iloc[-1]),1) if not np.isnan(dim_s.iloc[-1]) else 0
 
-        # ── ATR% ─────────────────────────────────────────────
-        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-        atr = tr.ewm(span=14, adjust=False).mean().iloc[-1]
-        atr_pct = round(float(atr/precio*100), 2) if precio > 0 else 0
+        tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr=tr.ewm(span=14,adjust=False).mean().iloc[-1]
+        atr_pct=round(float(atr/precio*100),2) if precio>0 else 0
 
-        # ── Cascada (velas verdes consecutivas) ───────────────
-        cascada = 0
-        o_arr = df["Open"].values; c_arr = c.values
-        for i in range(1, min(10, len(c_arr))):
-            if c_arr[-i] > o_arr[-i]:
-                cascada += 1
-            else:
-                break
+        cascada=0
+        for i in range(1,min(10,len(c))):
+            if c.iloc[-i]>o.iloc[-i]: cascada+=1
+            else: break
 
-        # ── Fuerza de la cascada (0-100) ──────────────────────
-        # Basado en: pendientes EMA, ADX, cascada, RSI posición
-        fuerza = 0
+        # Fuerza cascada 0-100
+        fuerza=0
+        if p9>0:  fuerza+=min(15,p9*50)
+        if p21>0: fuerza+=min(15,p21*80)
+        if p50>0: fuerza+=min(10,p50*100)
+        if adx>35: fuerza+=25
+        elif adx>25: fuerza+=18
+        elif adx>15: fuerza+=10
+        if dip>dim: fuerza+=min(15,(dip-dim)*0.5)
+        fuerza+=min(15,cascada*3)
+        if 40<=rsi<=65: fuerza+=5
+        elif rsi>72: fuerza-=8
+        fuerza=max(0,min(100,fuerza))
 
-        # Pendientes EMAs (0-40)
-        if pend9  > 0: fuerza += min(15, pend9  * 50)
-        if pend21 > 0: fuerza += min(15, pend21 * 80)
-        if pend50 > 0: fuerza += min(10, pend50 * 100)
+        acel9  = p9  > pa9
+        acel21 = p21 > pa21
+        alcista= dip>dim and adx>15 and p9>0
 
-        # ADX (0-25)
-        if adx > 35:   fuerza += 25
-        elif adx > 25: fuerza += 18
-        elif adx > 15: fuerza += 10
+        # ── Score rápido para señal motor ────────────────────
+        score_live=0
+        if rsi<35:    score_live+=20
+        elif rsi<50:  score_live+=12
+        elif rsi>70:  score_live-=15
+        if p9>0 and p21>0 and p50>0: score_live+=20
+        elif p9>0 and p21>0:         score_live+=12
+        if dip>dim and adx>20:       score_live+=20
+        if cascada>=3:  score_live+=20
+        elif cascada>=1:score_live+=10
+        if acel9 and acel21: score_live+=10
+        if chg1h>0:  score_live+=5
+        if chg24h>0: score_live+=5
+        score_live=max(0,min(100,score_live))
 
-        # DI+ vs DI- (0-15)
-        if dip > dim:
-            fuerza += min(15, (dip-dim)*0.5)
-
-        # Cascada velas (0-15)
-        fuerza += min(15, cascada * 3)
-
-        # RSI sano (0-5)
-        if 40 <= rsi <= 65: fuerza += 5
-        elif rsi > 70:      fuerza -= 5
-
-        fuerza = max(0, min(100, fuerza))
-
-        # ── Aceleración de la cascada ─────────────────────────
-        # ¿Las pendientes están subiendo o bajando?
-        # Comparamos pendiente actual vs 2 velas antes
-        def pend_anterior(ema_s, ventana=4, offset=2):
-            if len(ema_s) < ventana + offset + 1:
-                return 0
-            v = ema_s.values
-            return (v[-1-offset] - v[-ventana-offset]) / (v[-ventana-offset]+1e-10)*100
-
-        pa9  = pend_anterior(e9)
-        pa21 = pend_anterior(e21)
-        acelerando9  = pend9  > pa9
-        acelerando21 = pend21 > pa21
-
-        # ── Clasificación ─────────────────────────────────────
-        alcista = dip > dim and adx > 15 and pend9 > 0
-
-        if not alcista or (cascada == 0 and chg24h < -2):
-            clasificacion = "bajista"
-        elif fuerza >= 45 and acelerando9 and acelerando21:
-            clasificacion = "fuerte"
-        elif fuerza >= 25 and (not acelerando9 or not acelerando21):
-            clasificacion = "perdiendo"
-        elif fuerza >= 45:
-            clasificacion = "fuerte"
+        # ── Señal de motor ───────────────────────────────────
+        if score_live>=72 and fuerza>=50:
+            señal_motor="🟢 MANTENER / ENTRAR"
+            señal_col="#00ff88"
+        elif score_live>=55 and fuerza>=35:
+            señal_motor="🟡 VIGILAR"
+            señal_col="#ffaa00"
+        elif score_live<35 or (rsi>72 and not acel9):
+            señal_motor="🔴 CONSIDERAR SALIDA"
+            señal_col="#ff3355"
+        elif fuerza<20 and cascada==0:
+            señal_motor="🚨 SALIR — FUERZA AGOTADA"
+            señal_col="#ff0000"
         else:
-            clasificacion = "perdiendo"
+            señal_motor="⚪ NEUTRAL"
+            señal_col="#4488ff"
 
-        # Si está cayendo claramente
-        if pend9 < -0.1 and pend21 < -0.05 and dip < dim:
-            clasificacion = "bajista"
+        # ── Clasificación sección ────────────────────────────
+        if not alcista or (cascada==0 and chg24h<-2 and p9<0):
+            clasificacion="bajista"
+        elif fuerza>=40 and acel9 and acel21:
+            clasificacion="fuerte"
+        elif fuerza>=20:
+            clasificacion="perdiendo"
+        else:
+            clasificacion="bajista"
 
-        pfmt = f"${precio:,.6f}" if precio<1 else f"${precio:,.4f}" if precio<10 else f"${precio:,.2f}"
+        if p9<-0.1 and p21<-0.05 and dip<dim:
+            clasificacion="bajista"
+
+        pfmt=f"${precio:,.6f}" if precio<1 else f"${precio:,.4f}" if precio<10 else f"${precio:,.2f}"
 
         return {
-            "id":           coin_id,
-            "sym":          sym,
-            "precio":       pfmt,
-            "chg1h":        round(chg1h,  2),
-            "chg24h":       round(chg24h, 2),
-            "cascada":      cascada,
-            "fuerza":       round(fuerza, 1),
-            "pend9":        pend9,
-            "pend21":       pend21,
-            "pend50":       pend50,
-            "acelerando9":  acelerando9,
-            "acelerando21": acelerando21,
-            "rsi":          rsi,
-            "adx":          adx,
-            "dip":          dip,
-            "dim":          dim,
-            "atr_pct":      atr_pct,
-            "clasificacion":clasificacion,
+            "id":coin_id,"sym":sym,"precio_num":precio,"precio":pfmt,
+            "chg1h":round(chg1h,2),"chg24h":round(chg24h,2),
+            "cascada":cascada,"fuerza":round(fuerza,1),
+            "p9":p9,"p21":p21,"p50":p50,
+            "acel9":acel9,"acel21":acel21,
+            "rsi":rsi,"adx":adx,"dip":dip,"dim":dim,
+            "atr_pct":atr_pct,"clasificacion":clasificacion,
+            "score_live":score_live,
+            "señal_motor":señal_motor,"señal_col":señal_col,
         }
-    except:
-        return None
+    except: return None
 
 
-def flecha(v):
-    """Flecha direccional con color."""
-    if v > 0.05:   return f'<span style="color:#00ff88">↑ +{v:.3f}%</span>'
-    elif v < -0.05:return f'<span style="color:#ff3355">↓ {v:.3f}%</span>'
-    else:          return f'<span style="color:#4a6080">→ {v:.3f}%</span>'
-
-
-def card_live(r):
-    """Genera el HTML de una card de monitoreo."""
-    # Color por clasificación
+# ══════════════════════════════════════════════════════════════
+#  CARD LIVE — usando st.container() en lugar de HTML puro
+#  Solución definitiva al bug de HTML en columnas
+# ══════════════════════════════════════════════════════════════
+def render_card_live(r, col):
+    """Renderiza card usando componentes nativos de Streamlit."""
     col_map = {
-        "fuerte":   ("#00ff88", "#001a0a", "✅ CASCADA FUERTE"),
-        "perdiendo":("#ffaa00", "#1a1200", "⚠️ PERDIENDO FUERZA"),
-        "bajista":  ("#ff3355", "#1a0005", "🔴 TENDENCIA BAJISTA"),
+        "fuerte":   "#00ff88",
+        "perdiendo":"#ffaa00",
+        "bajista":  "#ff3355",
     }
-    col, bg, _ = col_map.get(r["clasificacion"], ("#4488ff","#0a0d1a","↔️"))
+    col_border = col_map.get(r["clasificacion"], "#4488ff")
 
-    # Barra de fuerza
-    fuerza_w = int(r["fuerza"])
-    fuerza_col = "#00ff88" if fuerza_w>=60 else("#ffaa00" if fuerza_w>=35 else "#ff3355")
+    with col:
+        # Borde visual con markdown simple
+        c24_str = f"+{r['chg24h']:.2f}%" if r['chg24h']>=0 else f"{r['chg24h']:.2f}%"
+        c1h_str = f"+{r['chg1h']:.2f}%"  if r['chg1h'] >=0 else f"{r['chg1h']:.2f}%"
 
-    # Velas cascada
-    velas_html = "🟩"*r["cascada"] + "⬜"*max(0,6-r["cascada"])
+        # Header
+        st.markdown(f"""<div style="border-left:4px solid {col_border};
+            padding:4px 8px;margin-bottom:4px;background:#08090f;border-radius:0 6px 6px 0">
+            <span style="font-family:'Orbitron',monospace;color:{col_border};
+                font-weight:700;font-size:0.95rem">{r['sym']}/USDT</span>
+            <span style="float:right;color:#4a6080;font-size:0.75rem">
+                {"🟩"*r['cascada']}{"⬜"*max(0,4-r['cascada'])}
+            </span>
+        </div>""", unsafe_allow_html=True)
 
-    # ADX color
-    adx_col = "#00ff88" if r["adx"]>25 else ("#ffaa00" if r["adx"]>15 else "#ff3355")
-    # DI colores
-    dip_col = "#00ff88" if r["dip"]>r["dim"] else "#4a6080"
-    dim_col = "#ff3355" if r["dim"]>r["dip"] else "#4a6080"
+        # Precio y cambio
+        c24_col = "green" if r['chg24h']>=0 else "red"
+        c1h_col = "green" if r['chg1h'] >=0 else "red"
+        st.markdown(f"""<div style="font-size:1.1rem;font-weight:700;
+            color:{col_border};padding:2px 8px">{r['precio']}
+            <span style="font-size:0.78rem;color:{'#00ff88' if r['chg24h']>=0 else '#ff3355'}">
+                {c24_str} 24H</span>
+            <span style="font-size:0.7rem;color:{'#00ff88' if r['chg1h']>=0 else '#ff3355'}">
+                · {c1h_str} 1H</span>
+        </div>""", unsafe_allow_html=True)
 
-    # Cambio 24h color
-    c24_col = "#00ff88" if r["chg24h"]>0 else "#ff3355"
-    c1h_col = "#00ff88" if r["chg1h"]>0  else "#ff3355"
+        # Barra de fuerza
+        fw = int(r['fuerza'])
+        fc = "#00ff88" if fw>=60 else("#ffaa00" if fw>=35 else "#ff3355")
+        st.markdown(f"""<div style="padding:0 8px">
+            <div style="font-size:0.62rem;color:#4a6060;margin-bottom:2px">
+                FUERZA CASCADA {fw}%</div>
+            <div style="background:#0d1428;border-radius:3px;height:8px;overflow:hidden">
+                <div style="width:{fw}%;height:100%;background:{fc};border-radius:3px"></div>
+            </div>
+        </div>""", unsafe_allow_html=True)
 
-    return f"""
-    <div style="background:{bg};border:1.5px solid {col};border-radius:10px;
-                padding:12px 14px;font-family:'Share Tech Mono',monospace;
-                margin-bottom:8px">
+        # EMAs en métricas nativas — NO hay bug aquí
+        ea, eb, ec2 = st.columns(3)
+        def pend_fmt(v):
+            return f"↑{v:+.3f}%" if v>0.02 else(f"↓{v:+.3f}%" if v<-0.02 else f"→{v:+.3f}%")
+        ea.metric("EMA9",  pend_fmt(r['p9']),  delta_color="normal")
+        eb.metric("EMA21", pend_fmt(r['p21']), delta_color="normal")
+        ec2.metric("EMA50",pend_fmt(r['p50']), delta_color="normal")
 
-        <!-- Header -->
-        <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="font-family:'Orbitron',monospace;font-size:1rem;
-                        color:{col};font-weight:700">{r['sym']}/USDT</div>
-            <div style="font-size:0.72rem;color:#4a6080">{velas_html}</div>
-        </div>
+        # ADX / DI / RSI
+        d1,d2,d3,d4 = st.columns(4)
+        adx_col="#00ff88" if r['adx']>25 else("#ffaa00" if r['adx']>15 else "#ff3355")
+        d1.markdown(f"<div style='text-align:center;font-size:0.7rem;color:#4a6080'>ADX<br><b style='color:{adx_col}'>{r['adx']}</b></div>", unsafe_allow_html=True)
+        d2.markdown(f"<div style='text-align:center;font-size:0.7rem;color:#4a6080'>+DI<br><b style='color:#00ff88'>{r['dip']}</b></div>", unsafe_allow_html=True)
+        d3.markdown(f"<div style='text-align:center;font-size:0.7rem;color:#4a6080'>-DI<br><b style='color:#ff3355'>{r['dim']}</b></div>", unsafe_allow_html=True)
+        d4.markdown(f"<div style='text-align:center;font-size:0.7rem;color:#4a6080'>RSI<br><b style='color:#ff8844'>{r['rsi']}</b></div>", unsafe_allow_html=True)
 
-        <!-- Precio -->
-        <div style="font-size:1.2rem;font-weight:700;color:{col};margin:3px 0">
-            {r['precio']}
-            <span style="font-size:0.78rem;color:{c24_col}">{r['chg24h']:+.2f}%</span>
-            <span style="font-size:0.7rem;color:{c1h_col}"> ({r['chg1h']:+.2f}% 1H)</span>
-        </div>
+        # ATR + señal motor
+        st.markdown(f"""<div style="padding:4px 8px;margin-top:2px;border-top:1px solid #0d1a2e">
+            <span style="font-size:0.68rem;color:#4a6080">ATR día: </span>
+            <span style="font-size:0.72rem;color:#ffaa00">{r['atr_pct']}%</span>
+            &nbsp;&nbsp;
+            <span style="font-size:0.72rem;font-weight:700;color:{r['señal_col']}">
+                {r['señal_motor']}</span>
+        </div>""", unsafe_allow_html=True)
 
-        <!-- Barra de fuerza -->
-        <div style="font-size:0.65rem;color:#4a6080;margin-top:5px">
-            FUERZA CASCADA
-        </div>
-        <div style="background:#0d1428;border-radius:4px;height:10px;
-                    margin:3px 0 6px 0;overflow:hidden;position:relative">
-            <div style="width:{fuerza_w}%;height:100%;background:{fuerza_col};
-                        border-radius:4px;transition:width 0.5s"></div>
-            <span style="position:absolute;right:4px;top:-1px;
-                         font-size:0.65rem;color:white">{fuerza_w}%</span>
-        </div>
-
-        <!-- Pendientes EMA -->
-        <div style="font-size:0.65rem;color:#4a6080;margin-bottom:2px">PENDIENTES EMA</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;
-                    font-size:0.72rem;margin-bottom:6px">
-            <div>EMA9: {flecha(r['pend9'])}</div>
-            <div>EMA21: {flecha(r['pend21'])}</div>
-            <div>EMA50: {flecha(r['pend50'])}</div>
-        </div>
-
-        <!-- ADX + DI -->
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;
-                    gap:3px;font-size:0.72rem">
-            <div>ADX: <b style="color:{adx_col}">{r['adx']}</b></div>
-            <div>+DI: <b style="color:{dip_col}">{r['dip']}</b></div>
-            <div>-DI: <b style="color:{dim_col}">{r['dim']}</b></div>
-            <div>RSI: <b style="color:#ff8844">{r['rsi']}</b></div>
-        </div>
-
-        <!-- ATR -->
-        <div style="margin-top:5px;font-size:0.7rem;color:#4a6080">
-            ATR hoy: <b style="color:#ffaa00">{r['atr_pct']}%</b>
-            <span style="color:#2a4060"> — movimiento esperado del día</span>
-        </div>
-    </div>"""
+        st.markdown("---")
 
 
-# ── SIDEBAR LIVE ───────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════
+#  SIDEBAR LIVE
+# ══════════════════════════════════════════════════════════════
 st.sidebar.divider()
 st.sidebar.markdown("**📡 AI.LINO LIVE**")
 
 with st.sidebar:
     intervalo_live = st.selectbox(
-        "⏱ Auto-refresh:",
+        "⏱ Refresh:",
         ["30 seg","60 seg","2 min","5 min","Manual"],
         index=1, key="intervalo_live"
     )
-    run_live = st.button("📡 INICIAR MONITOR LIVE", use_container_width=True, key="btn_live")
+    run_live = st.button("📡 INICIAR MONITOR LIVE",
+                         use_container_width=True, key="btn_live")
 
+# ── Agregar par desde scanner al Live ─────────────────────────
+if "agregar_a_live" in st.session_state and st.session_state.agregar_a_live:
+    sym_add = st.session_state.agregar_a_live
+    cid_add = LIVE_SYM_MAP.get(sym_add)
+    if cid_add:
+        wl = st.session_state.live_watchlist
+        if (cid_add, sym_add) not in wl:
+            wl.append((cid_add, sym_add))
+            st.session_state.live_watchlist = wl
+            supa_guardar_watchlist(wl)
+    st.session_state.agregar_a_live = None
+
+# ══════════════════════════════════════════════════════════════
+#  MONITOR LIVE UI
+# ══════════════════════════════════════════════════════════════
 if run_live:
     st.divider()
     st.markdown("## 📡 AI.LINO LIVE")
-    st.caption(f"Monitor en tiempo real · {len(LIVE_PARES)} pares · Fuente: CoinGecko · Refresca cada {intervalo_live}")
 
-    # Segundos de refresh
     seg_map = {"30 seg":30,"60 seg":60,"2 min":120,"5 min":300,"Manual":0}
     seg = seg_map[intervalo_live]
 
-    # Auto-refresh con st.empty + loop
-    placeholder = st.empty()
+    # ── Gestión de watchlist ──────────────────────────────────
+    with st.expander("⚙️ Gestionar pares monitoreados", expanded=False):
+        wl_actual = st.session_state.live_watchlist
+        st.caption(f"{'✅ Conectado a Supabase' if SUPA_OK else '💾 Solo sesión (configura SUPABASE_URL y SUPABASE_KEY para persistencia)'}")
 
-    def render_live():
-        """Descarga datos y renderiza el monitor completo."""
-        with st.spinner("📡 Obteniendo datos en tiempo real..."):
-            mkts = live_get_markets()
-            if not mkts:
-                st.error("❌ Sin datos de CoinGecko. Espera 60 seg y reintenta.")
+        # Mostrar pares actuales con botón eliminar
+        st.markdown("**Pares en el monitor:**")
+        for cid_w, sym_w in list(wl_actual):
+            cw1, cw2 = st.columns([4,1])
+            cw1.write(f"🔵 {sym_w}/USDT")
+            if cw2.button("❌", key=f"rm_{sym_w}"):
+                st.session_state.live_watchlist = [(c,s) for c,s in wl_actual if s!=sym_w]
+                supa_guardar_watchlist(st.session_state.live_watchlist)
+                st.rerun()
+
+        # Agregar par manualmente
+        st.markdown("**Agregar par:**")
+        disponibles = [(cid,sym) for cid,sym in LIVE_PARES_BASE
+                      if (cid,sym) not in st.session_state.live_watchlist]
+        if disponibles:
+            add_col1, add_col2 = st.columns([3,1])
+            add_sel = add_col1.selectbox("",
+                [f"{sym}" for _,sym in disponibles],
+                label_visibility="collapsed", key="add_live_sel")
+            if add_col2.button("➕ Agregar"):
+                sym_new = add_sel
+                cid_new = LIVE_SYM_MAP.get(sym_new)
+                if cid_new:
+                    wl = st.session_state.live_watchlist
+                    if (cid_new,sym_new) not in wl:
+                        wl.append((cid_new,sym_new))
+                        st.session_state.live_watchlist = wl
+                        supa_guardar_watchlist(wl)
+                        st.rerun()
+
+    # ── Cargar datos solo de la watchlist actual ──────────────
+    pares_monitor = st.session_state.live_watchlist
+    ids_str = ",".join([cid for cid,_ in pares_monitor])
+
+    # Placeholder para el refresh parcial — solo los datos cambian
+    data_placeholder = st.empty()
+
+    def cargar_y_mostrar():
+        with data_placeholder.container():
+            with st.spinner("📡 Actualizando datos..."):
+                mkts = live_get_markets(ids_str)
+                if not mkts:
+                    st.error("❌ Sin datos. Espera 60 seg y recarga.")
+                    return
+
+            mkt_map = {m["id"]:m for m in mkts}
+            prog = st.progress(0)
+            resultados_lv = []
+            for i_l,(cid,sym_l) in enumerate(pares_monitor):
+                prog.progress((i_l+1)/len(pares_monitor),text=f"📊 {sym_l}")
+                mkt = mkt_map.get(cid)
+                if mkt:
+                    res = analizar_live(cid,sym_l,mkt)
+                    if res: resultados_lv.append(res)
+                time.sleep(0.25)
+            prog.empty()
+
+            if not resultados_lv:
+                st.error("No se pudo analizar ningún par.")
                 return
 
-        mkt_map = {m["id"]: m for m in mkts}
+            fuertes   = sorted([r for r in resultados_lv if r["clasificacion"]=="fuerte"],
+                               key=lambda x: x["fuerza"], reverse=True)
+            perdiendo = sorted([r for r in resultados_lv if r["clasificacion"]=="perdiendo"],
+                               key=lambda x: x["fuerza"], reverse=True)
+            bajistas  = sorted([r for r in resultados_lv if r["clasificacion"]=="bajista"],
+                               key=lambda x: x["fuerza"])
 
-        prog = st.progress(0)
-        resultados_live = []
-        for i_l, (cid, sym_l) in enumerate(LIVE_PARES):
-            prog.progress((i_l+1)/len(LIVE_PARES), text=f"📊 {sym_l}")
-            mkt = mkt_map.get(cid)
-            if mkt:
-                res = analizar_live(cid, sym_l, mkt)
-                if res:
-                    resultados_live.append(res)
-            time.sleep(0.3)
-        prog.empty()
+            hora = datetime.utcnow().strftime("%H:%M:%S UTC")
+            st.caption(f"🕐 {hora} · ✅ {len(fuertes)} fuertes · ⚠️ {len(perdiendo)} perdiendo · 🔴 {len(bajistas)} bajistas")
 
-        if not resultados_live:
-            st.error("No se pudo analizar ningún par.")
-            return
+            # ── Mini barra resumen ────────────────────────────
+            todos_ord = sorted(resultados_lv,key=lambda x:x["fuerza"],reverse=True)
+            fig_res = plt.figure(figsize=(14,2.2),facecolor=BG)
+            ax_res  = fig_res.add_subplot(1,1,1); estilizar_ax(ax_res)
+            cols_r  = ["#00ff88" if r["clasificacion"]=="fuerte" else
+                       "#ffaa00" if r["clasificacion"]=="perdiendo" else "#ff3355"
+                       for r in todos_ord]
+            brs = ax_res.bar(range(len(todos_ord)),
+                            [r["fuerza"] for r in todos_ord],
+                            color=cols_r, alpha=0.85, width=0.7)
+            for xi,(r,b) in enumerate(zip(todos_ord,brs)):
+                ax_res.text(xi, b.get_height()+1, str(int(r["fuerza"])),
+                           ha="center",fontsize=6,color="white")
+            ax_res.set_xticks(range(len(todos_ord)))
+            ax_res.set_xticklabels([r["sym"] for r in todos_ord],
+                                   rotation=35,ha="right",fontsize=7,color="#4a6080")
+            ax_res.set_ylim(0,115); ax_res.set_yticks([])
+            ax_res.axhline(40,color="#ffaa00",lw=0.8,ls="--",alpha=0.5)
+            ax_res.set_title("Fuerza de Cascada — Tiempo Real",
+                            color="#4488ff",fontsize=9)
+            plt.tight_layout(); render_fig(fig_res)
 
-        # Separar en 3 grupos
-        fuertes   = [r for r in resultados_live if r["clasificacion"]=="fuerte"]
-        perdiendo = [r for r in resultados_live if r["clasificacion"]=="perdiendo"]
-        bajistas  = [r for r in resultados_live if r["clasificacion"]=="bajista"]
+            # ── SECCIÓN 1: CASCADA FUERTE ─────────────────────
+            if fuertes:
+                st.markdown(f"""<div style="background:#001a0a;border:1px solid #00ff88;
+                    border-radius:8px;padding:8px 14px;margin:8px 0;
+                    font-family:'Orbitron',monospace;font-size:0.88rem">
+                    ✅ CASCADA FUERTE — mantener o entrar
+                    <span style="float:right;color:#00ff88">{len(fuertes)} pares</span>
+                </div>""", unsafe_allow_html=True)
 
-        # Ordenar por fuerza descendente
-        fuertes.sort(  key=lambda x: x["fuerza"], reverse=True)
-        perdiendo.sort(key=lambda x: x["fuerza"], reverse=True)
-        bajistas.sort( key=lambda x: x["fuerza"])
+                for i in range(0, len(fuertes), 3):
+                    row = fuertes[i:i+3]
+                    cols_row = st.columns(len(row))
+                    for r,col in zip(row, cols_row):
+                        render_card_live(r, col)
 
-        hora_actual = datetime.utcnow().strftime("%H:%M:%S UTC")
-        st.caption(f"🕐 Última actualización: {hora_actual} · ✅ {len(fuertes)} fuertes · ⚠️ {len(perdiendo)} perdiendo · 🔴 {len(bajistas)} bajistas")
+            # ── SECCIÓN 2: PERDIENDO FUERZA ───────────────────
+            if perdiendo:
+                st.markdown(f"""<div style="background:#1a1200;border:1px solid #ffaa00;
+                    border-radius:8px;padding:8px 14px;margin:8px 0;
+                    font-family:'Orbitron',monospace;font-size:0.88rem">
+                    ⚠️ PERDIENDO FUERZA — vigilar para salir
+                    <span style="float:right;color:#ffaa00">{len(perdiendo)} pares</span>
+                </div>""", unsafe_allow_html=True)
 
-        # ══════════════════════════════════════════════════
-        #  MINI DASHBOARD — barra resumen horizontal
-        # ══════════════════════════════════════════════════
-        fig_res = plt.figure(figsize=(14, 2.5), facecolor=BG)
-        ax_res  = fig_res.add_subplot(1,1,1); estilizar_ax(ax_res)
+                for i in range(0, len(perdiendo), 3):
+                    row = perdiendo[i:i+3]
+                    cols_row = st.columns(len(row))
+                    for r,col in zip(row, cols_row):
+                        render_card_live(r, col)
 
-        todos_ord = sorted(resultados_live, key=lambda x: x["fuerza"], reverse=True)
-        syms_r    = [r["sym"] for r in todos_ord]
-        fuerzas_r = [r["fuerza"] for r in todos_ord]
-        cols_r    = []
-        for r in todos_ord:
-            if r["clasificacion"]=="fuerte":   cols_r.append("#00ff88")
-            elif r["clasificacion"]=="perdiendo": cols_r.append("#ffaa00")
-            else: cols_r.append("#ff3355")
+            # ── SECCIÓN 3: BAJISTA ────────────────────────────
+            if bajistas:
+                st.markdown(f"""<div style="background:#1a0005;border:1px solid #ff3355;
+                    border-radius:8px;padding:8px 14px;margin:8px 0;
+                    font-family:'Orbitron',monospace;font-size:0.88rem">
+                    🔴 TENDENCIA BAJISTA — considerar salida
+                    <span style="float:right;color:#ff3355">{len(bajistas)} pares</span>
+                </div>""", unsafe_allow_html=True)
 
-        brs_r = ax_res.bar(range(len(syms_r)), fuerzas_r, color=cols_r, alpha=0.85, width=0.7)
-        for xi, (r, b) in enumerate(zip(todos_ord, brs_r)):
-            ax_res.text(xi, b.get_height()+1, f"{int(r['fuerza'])}",
-                       ha="center", fontsize=6, color="white")
-        ax_res.set_xticks(range(len(syms_r)))
-        ax_res.set_xticklabels(syms_r, rotation=35, ha="right", fontsize=7, color="#4a6080")
-        ax_res.set_ylim(0, 115)
-        ax_res.axhline(45, color="#ffaa00", lw=0.8, ls="--", alpha=0.5)
-        ax_res.set_title("Fuerza de Cascada — Tiempo Real", color="#4488ff", fontsize=9)
-        ax_res.set_yticks([])
-        plt.tight_layout(); render_fig(fig_res)
+                for i in range(0, len(bajistas), 3):
+                    row = bajistas[i:i+3]
+                    cols_row = st.columns(len(row))
+                    for r,col in zip(row, cols_row):
+                        render_card_live(r, col)
 
-        # ══════════════════════════════════════════════════
-        #  SECCIÓN 1: ✅ CASCADA FUERTE
-        # ══════════════════════════════════════════════════
-        if fuertes:
-            st.markdown(f"""
-            <div style="background:#001a0a;border:1px solid #00ff88;border-radius:8px;
-                        padding:8px 14px;margin:10px 0 6px 0;font-family:'Orbitron',monospace">
-                <span style="color:#00ff88;font-size:0.9rem">✅ CASCADA FUERTE</span>
-                <span style="color:#2a4060;font-size:0.75rem"> — mantener o entrar</span>
-                <span style="color:#00ff88;font-size:0.85rem;float:right">{len(fuertes)} pares</span>
-            </div>""", unsafe_allow_html=True)
+            # ── Alertas automáticas ───────────────────────────
+            alertas_nuevas = []
+            for r in resultados_lv:
+                if "SALIR" in r["señal_motor"] or "AGOTADA" in r["señal_motor"]:
+                    alertas_nuevas.append(r)
+                    supa_guardar_alerta(r["sym"],r["señal_motor"],r["precio_num"],r["score_live"])
 
-            cols_f = st.columns(min(3, len(fuertes)))
-            for i_f, r in enumerate(fuertes[:6]):
-                with cols_f[i_f % 3]:
-                    st.markdown(card_live(r), unsafe_allow_html=True)
+            if alertas_nuevas:
+                st.markdown("### 🚨 ALERTAS DE SALIDA")
+                for r in alertas_nuevas:
+                    st.error(f"🚨 **{r['sym']}** — {r['señal_motor']} · Precio: {r['precio']} · RSI: {r['rsi']} · Fuerza: {r['fuerza']}%")
 
-        # ══════════════════════════════════════════════════
-        #  SECCIÓN 2: ⚠️ PERDIENDO FUERZA
-        # ══════════════════════════════════════════════════
-        if perdiendo:
-            st.markdown(f"""
-            <div style="background:#1a1200;border:1px solid #ffaa00;border-radius:8px;
-                        padding:8px 14px;margin:10px 0 6px 0;font-family:'Orbitron',monospace">
-                <span style="color:#ffaa00;font-size:0.9rem">⚠️ PERDIENDO FUERZA</span>
-                <span style="color:#2a4060;font-size:0.75rem"> — vigilar para salir pronto</span>
-                <span style="color:#ffaa00;font-size:0.85rem;float:right">{len(perdiendo)} pares</span>
-            </div>""", unsafe_allow_html=True)
-
-            cols_p = st.columns(min(3, len(perdiendo)))
-            for i_p, r in enumerate(perdiendo[:6]):
-                with cols_p[i_p % 3]:
-                    st.markdown(card_live(r), unsafe_allow_html=True)
-
-        # ══════════════════════════════════════════════════
-        #  SECCIÓN 3: 🔴 CASCADA BAJISTA
-        # ══════════════════════════════════════════════════
-        if bajistas:
-            st.markdown(f"""
-            <div style="background:#1a0005;border:1px solid #ff3355;border-radius:8px;
-                        padding:8px 14px;margin:10px 0 6px 0;font-family:'Orbitron',monospace">
-                <span style="color:#ff3355;font-size:0.9rem">🔴 TENDENCIA BAJISTA</span>
-                <span style="color:#2a4060;font-size:0.75rem"> — considerar salida si tienes posición</span>
-                <span style="color:#ff3355;font-size:0.85rem;float:right">{len(bajistas)} pares</span>
-            </div>""", unsafe_allow_html=True)
-
-            cols_b = st.columns(min(3, len(bajistas)))
-            for i_b, r in enumerate(bajistas[:6]):
-                with cols_b[i_b % 3]:
-                    st.markdown(card_live(r), unsafe_allow_html=True)
-
-        # ══════════════════════════════════════════════════
-        #  TABLA RESUMEN RÁPIDA
-        # ══════════════════════════════════════════════════
-        with st.expander("📋 Tabla resumen completa"):
-            filas_lv = []
-            for r in todos_ord:
-                cls_icon = {"fuerte":"✅","perdiendo":"⚠️","bajista":"🔴"}.get(r["clasificacion"],"↔️")
-                filas_lv.append({
-                    "Par":     r["sym"]+"/USDT",
-                    "Estado":  cls_icon,
-                    "Fuerza":  r["fuerza"],
-                    "Cascada🕯":r["cascada"],
-                    "1H%":    f"{r['chg1h']:+.2f}%",
-                    "24H%":   f"{r['chg24h']:+.2f}%",
-                    "EMA9↑":   r["pend9"],
-                    "EMA21↑":  r["pend21"],
-                    "ADX":     r["adx"],
-                    "+DI":     r["dip"],
-                    "-DI":     r["dim"],
-                    "RSI":     r["rsi"],
-                    "ATR%":    r["atr_pct"],
-                })
-            st.dataframe(pd.DataFrame(filas_lv), use_container_width=True, hide_index=True,
-                        column_config={
-                            "Fuerza":   st.column_config.ProgressColumn("Fuerza%", min_value=0, max_value=100, format="%.0f"),
-                            "Cascada🕯":st.column_config.NumberColumn("🕯 Velas", format="%d"),
-                            "EMA9↑":   st.column_config.NumberColumn("EMA9%",  format="%.3f"),
-                            "EMA21↑":  st.column_config.NumberColumn("EMA21%", format="%.3f"),
-                            "ATR%":    st.column_config.NumberColumn("ATR%",   format="%.2f"),
-                        })
+            # ── Tabla resumen ─────────────────────────────────
+            with st.expander("📋 Tabla resumen"):
+                filas_lv=[]
+                for r in todos_ord:
+                    ic={"fuerte":"✅","perdiendo":"⚠️","bajista":"🔴"}.get(r["clasificacion"],"↔️")
+                    filas_lv.append({
+                        "Par":r["sym"]+"/USDT","Estado":ic,
+                        "Fuerza":r["fuerza"],"🕯":r["cascada"],
+                        "Motor":r["señal_motor"],
+                        "1H%":f"{r['chg1h']:+.2f}%","24H%":f"{r['chg24h']:+.2f}%",
+                        "EMA9":r["p9"],"EMA21":r["p21"],
+                        "ADX":r["adx"],"+DI":r["dip"],"-DI":r["dim"],
+                        "RSI":r["rsi"],"ATR%":r["atr_pct"],
+                    })
+                st.dataframe(pd.DataFrame(filas_lv),use_container_width=True,hide_index=True,
+                    column_config={
+                        "Fuerza":st.column_config.ProgressColumn("Fuerza%",min_value=0,max_value=100,format="%.0f"),
+                        "🕯":st.column_config.NumberColumn("🕯 Velas",format="%d"),
+                        "EMA9":st.column_config.NumberColumn("EMA9%",format="%.3f"),
+                        "EMA21":st.column_config.NumberColumn("EMA21%",format="%.3f"),
+                    })
 
     # Primera carga
-    render_live()
+    cargar_y_mostrar()
 
-    # Auto-refresh
+    # ── Refresh parcial en la parte inferior ──────────────────
     if seg > 0:
-        st.info(f"⏱ Próximo refresco en {seg} segundos — presiona **📡 INICIAR MONITOR LIVE** para actualizar ahora.")
+        st.markdown("---")
+        refresh_col1, refresh_col2 = st.columns([3,1])
+        refresh_col1.info(f"⏱ Auto-refresh cada {intervalo_live} · Solo se actualizan los datos, no la página completa.")
+        if refresh_col2.button("🔄 Actualizar ahora", key="refresh_manual"):
+            live_get_markets.clear()
+            live_get_ohlc.clear()
+            st.rerun()
         time.sleep(seg)
+        # Limpiar cache de datos para forzar nuevos datos
+        live_get_markets.clear()
         st.rerun()
