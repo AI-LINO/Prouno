@@ -2833,6 +2833,202 @@ with st.sidebar:
     run_apex = st.button("🚀 EJECUTAR APEX",
                          use_container_width=True, key="btn_apex")
 
+def filtro_alto_impacto(resultados, min_atr_pct=2.5, min_score=65):
+    """
+    Filtra los resultados del scanner para mostrar SOLO
+    las criptos con mayor potencial de rendimiento:
+
+    1. ATR% ≥ 2.5% — mínimo movimiento diario esperado
+       (menos de 2.5% = no vale el riesgo/tiempo)
+    2. Score APEX ≥ 65 — confluencia fuerte
+    3. R/R ≥ 2.0 — mínimo 2 de ganancia por 1 de riesgo
+    4. Vol ratio ≥ 1.5 — volumen real, no fantasma
+    5. ADX ≥ 20 — tendencia con fuerza real
+    6. Los 3 filtros pasan
+
+    Ordena por: score × ATR% (mayor puntuación relativa al movimiento)
+    """
+    filtrados = []
+    for r in resultados:
+        # Criterios de alto impacto
+        if r["atr_pct"]  < min_atr_pct: continue   # muy pequeño movimiento
+        if r["apex_score"] < min_score:  continue   # confluencia insuficiente
+        if r["rr1"]      < 2.0:          continue   # R/R malo
+        if r["vol_ratio"] < 1.3:         continue   # sin volumen real
+        if r["adx"]      < 18:           continue   # sin tendencia
+        if not r["todos_pasan"]:         continue   # filtros no completos
+
+        # Score de impacto = score  ATR%  R/R (maximiza los tres)
+        r["impacto"] = round(r["apex_score"] * r["atr_pct"] * r["rr1"] / 100, 2)
+        filtrados.append(r)
+
+    # Ordenar por impacto total
+    filtrados.sort(key=lambda x: x["impacto"], reverse=True)
+    return filtrados
+
+
+# ==============================================================
+#  INDICADORES EN TIEMPO REAL (para el panel de seguimiento)
+# ==============================================================
+
+def mostrar_ranking_alto_impacto(resultados_ap):
+    """
+    Muestra el ranking filtrado de alto impacto —
+    solo los que valen el riesgo y dan alto rendimiento.
+    """
+    top_ai = filtro_alto_impacto(resultados_ap)
+
+    if not top_ai:
+        st.info("⏳ Sin señales de alto impacto ahora — el mercado no está en condiciones óptimas. "
+               "Espera o baja los filtros.")
+        return
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#001428,#001a0a);
+                border:2px solid #00ff88;border-radius:12px;
+                padding:14px 20px;margin:10px 0;
+                font-family:'Orbitron',monospace">
+        <div style="color:#00ff88;font-size:1rem;font-weight:700;letter-spacing:2px">
+            🏆 RANKING ALTO IMPACTO — {len(top_ai)} señales elite
+        </div>
+        <div style="color:#4488ff;font-size:0.72rem;margin-top:3px">
+            ATR≥2.5% · Score≥65 · R/R≥2x · Volumen real · ADX≥18 · 3 filtros activos
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    # Top 3 con cards destacadas
+    top3_ai = top_ai[:3]
+    cols_ai  = st.columns(len(top3_ai))
+
+    for i,(r,col_ai) in enumerate(zip(top3_ai, cols_ai)):
+        medalla = ["🥇","🥈","🥉"][i]
+        col = r["col_apex"]
+        with col_ai:
+            # Card de alto impacto
+            st.markdown(f"""
+            <div style="background:#08090f;border:2px solid {col};
+                        border-radius:12px;padding:14px;
+                        font-family:'Share Tech Mono',monospace">
+                <div style="font-family:'Orbitron',monospace;font-size:1.1rem;
+                            color:{col};font-weight:700">
+                    {medalla} {r['sym']}/USDT
+                </div>
+                <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">
+                    {r['clasificacion']}
+                </div>
+                <!-- Score e impacto -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;
+                            gap:8px;margin:8px 0">
+                    <div style="text-align:center;padding:6px;
+                                background:#0d1428;border-radius:6px">
+                        <div style="color:#2a4060;font-size:0.62rem">APEX SCORE</div>
+                        <div style="color:{col};font-size:1.4rem;font-weight:700">
+                            {r['apex_score']}</div>
+                    </div>
+                    <div style="text-align:center;padding:6px;
+                                background:#0d1428;border-radius:6px">
+                        <div style="color:#2a4060;font-size:0.62rem">IMPACTO</div>
+                        <div style="color:#ffdd44;font-size:1.4rem;font-weight:700">
+                            {r['impacto']}</div>
+                    </div>
+                </div>
+                <!-- Métricas clave -->
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
+                            gap:3px;font-size:0.72rem;margin-bottom:8px">
+                    <div>ATR: <b style="color:#ffaa00">{r['atr_pct']}%</b></div>
+                    <div>R/R: <b style="color:#00ff88">{r['rr1']}x</b></div>
+                    <div>ADX: <b style="color:#44aaff">{r['adx']}</b></div>
+                    <div>RSI: <b style="color:#ff8844">{r['rsi']}</b></div>
+                    <div>Vol: <b style="color:#4488ff">{r['vol_ratio']}x</b></div>
+                    <div>🕯: <b style="color:#00ff88">{r['cascada']}</b></div>
+                </div>
+                <!-- Niveles -->
+                <div style="border-top:1px solid #0d1a2e;padding-top:8px;font-size:0.7rem">
+                    <div style="color:#00ff88">Entry: {r['precio_fmt']}</div>
+                    <div style="color:#ff3355">SL: {fp(r['sl'])}</div>
+                    <div style="color:#ffaa00">TP1: {fp(r['tp1'])}
+                        <span style="color:#4a6060"> R/R {r['rr1']}x</span></div>
+                    <div style="color:#ffdd44">TP2: {fp(r['tp2'])}
+                        <span style="color:#4a6060"> R/R {r['rr2']}x</span></div>
+                    <div style="color:#ffffff">TP3: {fp(r['tp3'])}</div>
+                </div>
+                <!-- Filtros -->
+                <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;
+                            gap:3px;font-size:0.68rem">
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f1_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f1_pasa'] else '#ff3355'}">
+                        {'✅' if r['f1_pasa'] else '❌'} F1</div>
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f2_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f2_pasa'] else '#ff3355'}">
+                        {'✅' if r['f2_pasa'] else '❌'} F2</div>
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f3_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f3_pasa'] else '#ff3355'}">
+                        {'✅' if r['f3_pasa'] else '❌'} F3</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Botn seguimiento directo
+            cid_ai = next((ci for ci,sy in APEX_PARES if sy==r["sym"]), None)
+            if cid_ai:
+                import uuid as _u2
+                if st.button(f"🎯 SEGUIR EN VIVO {medalla}",
+                            key=f"ai_live_{r['sym']}_{str(_u2.uuid4())[:6]}",
+                            type="primary"):
+                    supa_guardar_posicion_activa({
+                        "sym":       r["sym"],
+                        "cid":       cid_ai,
+                        "entry":     r["precio"],
+                        "sl":        r["sl"],
+                        "tp1":       r["tp1"],
+                        "tp2":       r["tp2"],
+                        "tp3":       r["tp3"],
+                        "trail":     r["trail"],
+                        "trail_sl":  r["sl"],
+                        "max_precio":r["precio"],
+                        "atr_pct":   r["atr_pct"],
+                        "score":     r["apex_score"],
+                        "tiempo":    datetime.utcnow().isoformat(),
+                        "activa":    True,
+                    })
+                    supa_guardar_apex_signal(
+                        r["sym"],"ENTRADA",r["precio"],
+                        r["apex_score"],r["sl"],r["tp1"],r["tp2"],
+                        f"Impacto:{r['impacto']}"
+                    )
+                    st.success(f"✅ {r['sym']} en seguimiento — desplázate arriba para ver el panel")
+                    time.sleep(1); st.rerun()
+
+    # Tabla completa alto impacto
+    if len(top_ai) > 3:
+        with st.expander(f"📋 Ver todos los {len(top_ai)} pares de alto impacto"):
+            filas_ai = []
+            for r in top_ai:
+                filas_ai.append({
+                    "Par":      r["sym"]+"/USDT",
+                    "Impacto":  r["impacto"],
+                    "APEX":     r["apex_score"],
+                    "ATR%":     r["atr_pct"],
+                    "R/R":      r["rr1"],
+                    "Vol":      r["vol_ratio"],
+                    "ADX":      r["adx"],
+                    "RSI":      r["rsi"],
+                    "Entry":    r["precio_fmt"],
+                    "TP1":      fp(r["tp1"]),
+                    "TP3":      fp(r["tp3"]),
+                })
+            st.dataframe(pd.DataFrame(filas_ai),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Impacto": st.column_config.ProgressColumn(
+                                "Impacto", min_value=0, max_value=500, format="%.1f"),
+                            "APEX": st.column_config.ProgressColumn(
+                                "APEX", min_value=0, max_value=100, format="%d"),
+                        })
+
+
 if run_apex:
     st.divider()
     # Header APEX
@@ -3245,43 +3441,6 @@ def supa_actualizar_trail_sl(sym, trail_sl, max_precio, estado):
 #  ATR FILTER  SOLO ALTO IMPACTO
 #  Elimina las "centaveras"  solo criptos con potencial real
 # ==============================================================
-def filtro_alto_impacto(resultados, min_atr_pct=2.5, min_score=65):
-    """
-    Filtra los resultados del scanner para mostrar SOLO
-    las criptos con mayor potencial de rendimiento:
-
-    1. ATR% ≥ 2.5% — mínimo movimiento diario esperado
-       (menos de 2.5% = no vale el riesgo/tiempo)
-    2. Score APEX ≥ 65 — confluencia fuerte
-    3. R/R ≥ 2.0 — mínimo 2 de ganancia por 1 de riesgo
-    4. Vol ratio ≥ 1.5 — volumen real, no fantasma
-    5. ADX ≥ 20 — tendencia con fuerza real
-    6. Los 3 filtros pasan
-
-    Ordena por: score × ATR% (mayor puntuación relativa al movimiento)
-    """
-    filtrados = []
-    for r in resultados:
-        # Criterios de alto impacto
-        if r["atr_pct"]  < min_atr_pct: continue   # muy pequeño movimiento
-        if r["apex_score"] < min_score:  continue   # confluencia insuficiente
-        if r["rr1"]      < 2.0:          continue   # R/R malo
-        if r["vol_ratio"] < 1.3:         continue   # sin volumen real
-        if r["adx"]      < 18:           continue   # sin tendencia
-        if not r["todos_pasan"]:         continue   # filtros no completos
-
-        # Score de impacto = score  ATR%  R/R (maximiza los tres)
-        r["impacto"] = round(r["apex_score"] * r["atr_pct"] * r["rr1"] / 100, 2)
-        filtrados.append(r)
-
-    # Ordenar por impacto total
-    filtrados.sort(key=lambda x: x["impacto"], reverse=True)
-    return filtrados
-
-
-# ==============================================================
-#  INDICADORES EN TIEMPO REAL (para el panel de seguimiento)
-# ==============================================================
 @st.cache_data(ttl=28)
 def precio_tiempo_real(coin_id):
     try:
@@ -3691,160 +3850,3 @@ if pos_activa and pos_activa.get("activa", True):
 # ==============================================================
 # Esta funcin se llama DESPUS de calcular resultados_ap en APEX
 # Agrega una seccin " TOP ALTO IMPACTO" encima de los tabs
-
-def mostrar_ranking_alto_impacto(resultados_ap):
-    """
-    Muestra el ranking filtrado de alto impacto —
-    solo los que valen el riesgo y dan alto rendimiento.
-    """
-    top_ai = filtro_alto_impacto(resultados_ap)
-
-    if not top_ai:
-        st.info("⏳ Sin señales de alto impacto ahora — el mercado no está en condiciones óptimas. "
-               "Espera o baja los filtros.")
-        return
-
-    st.markdown(f"""
-    <div style="background:linear-gradient(135deg,#001428,#001a0a);
-                border:2px solid #00ff88;border-radius:12px;
-                padding:14px 20px;margin:10px 0;
-                font-family:'Orbitron',monospace">
-        <div style="color:#00ff88;font-size:1rem;font-weight:700;letter-spacing:2px">
-            🏆 RANKING ALTO IMPACTO — {len(top_ai)} señales elite
-        </div>
-        <div style="color:#4488ff;font-size:0.72rem;margin-top:3px">
-            ATR≥2.5% · Score≥65 · R/R≥2x · Volumen real · ADX≥18 · 3 filtros activos
-        </div>
-    </div>""", unsafe_allow_html=True)
-
-    # Top 3 con cards destacadas
-    top3_ai = top_ai[:3]
-    cols_ai  = st.columns(len(top3_ai))
-
-    for i,(r,col_ai) in enumerate(zip(top3_ai, cols_ai)):
-        medalla = ["🥇","🥈","🥉"][i]
-        col = r["col_apex"]
-        with col_ai:
-            # Card de alto impacto
-            st.markdown(f"""
-            <div style="background:#08090f;border:2px solid {col};
-                        border-radius:12px;padding:14px;
-                        font-family:'Share Tech Mono',monospace">
-                <div style="font-family:'Orbitron',monospace;font-size:1.1rem;
-                            color:{col};font-weight:700">
-                    {medalla} {r['sym']}/USDT
-                </div>
-                <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">
-                    {r['clasificacion']}
-                </div>
-                <!-- Score e impacto -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;
-                            gap:8px;margin:8px 0">
-                    <div style="text-align:center;padding:6px;
-                                background:#0d1428;border-radius:6px">
-                        <div style="color:#2a4060;font-size:0.62rem">APEX SCORE</div>
-                        <div style="color:{col};font-size:1.4rem;font-weight:700">
-                            {r['apex_score']}</div>
-                    </div>
-                    <div style="text-align:center;padding:6px;
-                                background:#0d1428;border-radius:6px">
-                        <div style="color:#2a4060;font-size:0.62rem">IMPACTO</div>
-                        <div style="color:#ffdd44;font-size:1.4rem;font-weight:700">
-                            {r['impacto']}</div>
-                    </div>
-                </div>
-                <!-- Métricas clave -->
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
-                            gap:3px;font-size:0.72rem;margin-bottom:8px">
-                    <div>ATR: <b style="color:#ffaa00">{r['atr_pct']}%</b></div>
-                    <div>R/R: <b style="color:#00ff88">{r['rr1']}x</b></div>
-                    <div>ADX: <b style="color:#44aaff">{r['adx']}</b></div>
-                    <div>RSI: <b style="color:#ff8844">{r['rsi']}</b></div>
-                    <div>Vol: <b style="color:#4488ff">{r['vol_ratio']}x</b></div>
-                    <div>🕯: <b style="color:#00ff88">{r['cascada']}</b></div>
-                </div>
-                <!-- Niveles -->
-                <div style="border-top:1px solid #0d1a2e;padding-top:8px;font-size:0.7rem">
-                    <div style="color:#00ff88">Entry: {r['precio_fmt']}</div>
-                    <div style="color:#ff3355">SL: {fp(r['sl'])}</div>
-                    <div style="color:#ffaa00">TP1: {fp(r['tp1'])}
-                        <span style="color:#4a6060"> R/R {r['rr1']}x</span></div>
-                    <div style="color:#ffdd44">TP2: {fp(r['tp2'])}
-                        <span style="color:#4a6060"> R/R {r['rr2']}x</span></div>
-                    <div style="color:#ffffff">TP3: {fp(r['tp3'])}</div>
-                </div>
-                <!-- Filtros -->
-                <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;
-                            gap:3px;font-size:0.68rem">
-                    <div style="text-align:center;padding:3px;border-radius:4px;
-                                background:{'#001a0a' if r['f1_pasa'] else '#1a0005'};
-                                color:{'#00ff88' if r['f1_pasa'] else '#ff3355'}">
-                        {'✅' if r['f1_pasa'] else '❌'} F1</div>
-                    <div style="text-align:center;padding:3px;border-radius:4px;
-                                background:{'#001a0a' if r['f2_pasa'] else '#1a0005'};
-                                color:{'#00ff88' if r['f2_pasa'] else '#ff3355'}">
-                        {'✅' if r['f2_pasa'] else '❌'} F2</div>
-                    <div style="text-align:center;padding:3px;border-radius:4px;
-                                background:{'#001a0a' if r['f3_pasa'] else '#1a0005'};
-                                color:{'#00ff88' if r['f3_pasa'] else '#ff3355'}">
-                        {'✅' if r['f3_pasa'] else '❌'} F3</div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-
-            # Botn seguimiento directo
-            cid_ai = next((ci for ci,sy in APEX_PARES if sy==r["sym"]), None)
-            if cid_ai:
-                import uuid as _u2
-                if st.button(f"🎯 SEGUIR EN VIVO {medalla}",
-                            key=f"ai_live_{r['sym']}_{str(_u2.uuid4())[:6]}",
-                            type="primary"):
-                    supa_guardar_posicion_activa({
-                        "sym":       r["sym"],
-                        "cid":       cid_ai,
-                        "entry":     r["precio"],
-                        "sl":        r["sl"],
-                        "tp1":       r["tp1"],
-                        "tp2":       r["tp2"],
-                        "tp3":       r["tp3"],
-                        "trail":     r["trail"],
-                        "trail_sl":  r["sl"],
-                        "max_precio":r["precio"],
-                        "atr_pct":   r["atr_pct"],
-                        "score":     r["apex_score"],
-                        "tiempo":    datetime.utcnow().isoformat(),
-                        "activa":    True,
-                    })
-                    supa_guardar_apex_signal(
-                        r["sym"],"ENTRADA",r["precio"],
-                        r["apex_score"],r["sl"],r["tp1"],r["tp2"],
-                        f"Impacto:{r['impacto']}"
-                    )
-                    st.success(f"✅ {r['sym']} en seguimiento — desplázate arriba para ver el panel")
-                    time.sleep(1); st.rerun()
-
-    # Tabla completa alto impacto
-    if len(top_ai) > 3:
-        with st.expander(f"📋 Ver todos los {len(top_ai)} pares de alto impacto"):
-            filas_ai = []
-            for r in top_ai:
-                filas_ai.append({
-                    "Par":      r["sym"]+"/USDT",
-                    "Impacto":  r["impacto"],
-                    "APEX":     r["apex_score"],
-                    "ATR%":     r["atr_pct"],
-                    "R/R":      r["rr1"],
-                    "Vol":      r["vol_ratio"],
-                    "ADX":      r["adx"],
-                    "RSI":      r["rsi"],
-                    "Entry":    r["precio_fmt"],
-                    "TP1":      fp(r["tp1"]),
-                    "TP3":      fp(r["tp3"]),
-                })
-            st.dataframe(pd.DataFrame(filas_ai),
-                        use_container_width=True, hide_index=True,
-                        column_config={
-                            "Impacto": st.column_config.ProgressColumn(
-                                "Impacto", min_value=0, max_value=500, format="%.1f"),
-                            "APEX": st.column_config.ProgressColumn(
-                                "APEX", min_value=0, max_value=100, format="%d"),
-                        })
