@@ -1184,597 +1184,338 @@ if ejecutar:
 # ==============================================================
 
 # IDs de CoinGecko para los pares disponibles en Bitso
-COINS_BITSO = [
-    # id_coingecko, smbolo display
-    ("bitcoin",          "BTC"),
-    ("ethereum",         "ETH"),
-    ("ripple",           "XRP"),
-    ("litecoin",         "LTC"),
-    ("bitcoin-cash",     "BCH"),
-    ("chainlink",        "LINK"),
-    ("solana",           "SOL"),
-    ("dogecoin",         "DOGE"),
-    ("cardano",          "ADA"),
-    ("avalanche-2",      "AVAX"),
-    ("polkadot",         "DOT"),
-    ("uniswap",          "UNI"),
-    ("aave",             "AAVE"),
-    ("shiba-inu",        "SHIB"),
-    ("near",             "NEAR"),
-    ("cosmos",           "ATOM"),
-    ("maker",            "MKR"),
-    ("compound-governance-token", "COMP"),
-    ("injective-protocol","INJ"),
-    ("aptos",            "APT"),
-    ("arbitrum",         "ARB"),
-    ("optimism",         "OP"),
-    ("sui",              "SUI"),
-    ("fetch-ai",         "FET"),
-    ("worldcoin-wld",    "WLD"),
-    ("matic-network",    "MATIC"),
-    ("the-sandbox",      "SAND"),
-    ("decentraland",     "MANA"),
-    ("curve-dao-token",  "CRV"),
-    ("synthetix-network-token","SNX"),
+# ============================================================
+# SCANNER BITSO v3 - Usa Binance (sin rate limit)
+# Analiza los pares de Bitso con datos de Binance
+# ============================================================
+
+SCANNER_BITSO_PARES = [
+    ("BTCUSDT","BTC"),("ETHUSDT","ETH"),("SOLUSDT","SOL"),
+    ("XRPUSDT","XRP"),("DOGEUSDT","DOGE"),("ADAUSDT","ADA"),
+    ("AVAXUSDT","AVAX"),("LINKUSDT","LINK"),("NEARUSDT","NEAR"),
+    ("INJUSDT","INJ"),("APTUSDT","APT"),("ARBUSDT","ARB"),
+    ("OPUSDT","OP"),("SUIUSDT","SUI"),("UNIUSDT","UNI"),
+    ("AAVEUSDT","AAVE"),("FETUSDT","FET"),("MATICUSDT","MATIC"),
+    ("SHIBUSDT","SHIB"),("PEPEUSDT","PEPE"),("LTCUSDT","LTC"),
+    ("BCHUSDT","BCH"),("MKRUSDT","MKR"),("DOTUSDT","DOT"),
+    ("ATOMUSDT","ATOM"),("BNBUSDT","BNB"),
 ]
 
-CG = "https://api.coingecko.com/api/v3"
-
-
-@st.cache_data(ttl=120)   # cache 2 minutos — datos casi en tiempo real
-def cg_get_markets():
-    """Obtiene precios actuales, cambios y volúmenes de todos los coins."""
-    ids = ",".join([c[0] for c in COINS_BITSO])
+def analizar_par_scanner(sym_binance, sym_display, interval_bn, dias):
+    """Analiza un par usando datos de Binance. Retorna dict o None."""
     try:
-        r = requests.get(f"{CG}/coins/markets", params={
-            "vs_currency": "usd",
-            "ids": ids,
-            "order": "market_cap_desc",
-            "per_page": 50,
-            "price_change_percentage": "1h,24h,7d",
-            "sparkline": "false",
-        }, timeout=15)
-        if r.status_code == 200:
-            return r.json()
-        return []
-    except:
-        return []
-
-
-@st.cache_data(ttl=300)   # cache 5 minutos
-def cg_get_ohlc(coin_id, days=14):
-    """Obtiene velas OHLC de CoinGecko para calcular indicadores."""
-    try:
-        r = requests.get(f"{CG}/coins/{coin_id}/ohlc", params={
-            "vs_currency": "usd",
-            "days": days,
-        }, timeout=12)
-        if r.status_code == 200:
-            data = r.json()
-            if not data or len(data) < 5:
-                return None
-            df = pd.DataFrame(data, columns=["ts","Open","High","Low","Close"])
-            df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-            df.set_index("ts", inplace=True)
-            df = df.astype(float)
-            df["Volume"] = 1.0   # CoinGecko OHLC no da volumen — usamos market data
-            return df
-        return None
-    except:
-        return None
-
-
-def calcular_mecha_simple(precio, rsi, bb_pct, cambio_24h):
-    """Mecha rápida sin OHLC — solo con datos de markets."""
-    mecha_rsi = max(0, min(100, (75 - rsi) / 45 * 100)) if rsi else 50
-    mecha_bb  = max(0, min(100, (1 - bb_pct) * 100))    if bb_pct is not None else 50
-    # Si ya subi mucho en 24h, menos mecha
-    if cambio_24h and cambio_24h > 20:
-        penalizacion = 30
-    elif cambio_24h and cambio_24h > 10:
-        penalizacion = 15
-    else:
-        penalizacion = 0
-    mecha = (mecha_rsi * 0.6 + mecha_bb * 0.4) - penalizacion
-    return max(0, min(100, mecha))
-
-
-def analizar_coin_cg(coin_data, ohlc_df):
-    """
-    Análisis completo usando datos de CoinGecko.
-    coin_data = dict del endpoint /markets
-    ohlc_df   = DataFrame de velas (puede ser None)
-    """
-    try:
-        cid    = coin_data.get("id", "")
-        sym    = coin_data.get("symbol", "").upper()
-        precio = coin_data.get("current_price", 0) or 0
-        cap    = coin_data.get("market_cap", 0) or 0
-        vol24h = coin_data.get("total_volume", 0) or 0
-
-        chg1h  = coin_data.get("price_change_percentage_1h_in_currency",  0) or 0
-        chg24h = coin_data.get("price_change_percentage_24h",              0) or 0
-        chg7d  = coin_data.get("price_change_percentage_7d_in_currency",   0) or 0
-
-        if precio <= 0:
+        df = binance_descargar(sym_binance, interval_bn, dias)
+        if df is None or df.empty or len(df) < 20:
             return None
 
-        #  Cascada alcista con OHLC 
+        c = df["Close"]; h = df["High"]; l = df["Low"]
+        v = df["Volume"]; o = df["Open"]; n = len(c)
+        precio = float(c.iloc[-1])
+        if precio <= 0: return None
+
+        # EMAs
+        e9  = c.ewm(span=9,  adjust=False).mean()
+        e21 = c.ewm(span=21, adjust=False).mean()
+        e50 = c.ewm(span=50, adjust=False).mean()
+        e200= c.ewm(span=200,adjust=False).mean()
+
+        # RSI
+        d   = c.diff()
+        g   = d.clip(lower=0).ewm(com=13, adjust=False).mean()
+        ls  = (-d.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rsi = float((100-(100/(1+g/(ls+1e-10)))).iloc[-1])
+        rsi = 50 if np.isnan(rsi) else rsi
+
+        # MACD
+        ef   = c.ewm(span=12, adjust=False).mean()
+        es2  = c.ewm(span=26, adjust=False).mean()
+        mhist= (ef-es2) - (ef-es2).ewm(span=9, adjust=False).mean()
+        mh   = float(mhist.iloc[-1]) if not np.isnan(mhist.iloc[-1]) else 0
+        mhp  = float(mhist.iloc[-2]) if n>2 and not np.isnan(mhist.iloc[-2]) else mh
+        cruce_macd = (mhp <= 0 and mh > 0)
+
+        # Bollinger
+        bm  = c.rolling(20).mean(); bs = c.rolling(20).std()
+        bb_p= float(((c-(bm-2*bs))/(4*bs+1e-9)).iloc[-1])
+        bb_p= 0.5 if np.isnan(bb_p) else float(np.clip(bb_p,0,1))
+
+        # ATR
+        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = float(tr.ewm(span=14, adjust=False).mean().iloc[-1])
+        atr_pct = atr/precio*100
+
+        # ADX
+        dmp = h.diff().clip(lower=0); dmn = (-l.diff()).clip(lower=0)
+        dmp = dmp.where(dmp>dmn, 0); dmn = dmn.where(dmn>dmp, 0)
+        a14 = tr.ewm(span=14, adjust=False).mean()
+        dip = float((dmp.ewm(span=14,adjust=False).mean()/(a14+1e-10)*100).iloc[-1])
+        dim = float((dmn.ewm(span=14,adjust=False).mean()/(a14+1e-10)*100).iloc[-1])
+        adx = abs(dip-dim)/(dip+dim+1e-10)*100
+
+        # Volumen ratio
+        vol_sma = v.rolling(20).mean()
+        vol_r   = float((v/(vol_sma+1e-10)).iloc[-1])
+
+        # Kalman velocidad
+        pk  = c.ewm(span=5, adjust=False).mean()
+        vel = float(pk.diff().iloc[-1])
+        velp= float(pk.diff().iloc[-2]) if n>2 else vel
+
+        # Cascada velas verdes
         cascada = 0
-        rsi_v   = 50.0
-        bb_pct_v= 0.5
-        atr_pct = 2.0
-        estabilidad = 50.0
-        e9_v = e21_v = precio   # defaults
+        for i in range(1, min(8,n)):
+            if c.iloc[-i] > o.iloc[-i]: cascada += 1
+            else: break
 
-        if ohlc_df is not None and len(ohlc_df) >= 10:
-            c = ohlc_df["Close"]
-            o = ohlc_df["Open"]
-            h = ohlc_df["High"]
-            l = ohlc_df["Low"]
+        # Pendientes EMA
+        p9  = (e9.iloc[-1]-e9.iloc[-5])/(e9.iloc[-5]+1e-10)*100   if n>5 else 0
+        p21 = (e21.iloc[-1]-e21.iloc[-5])/(e21.iloc[-5]+1e-10)*100 if n>5 else 0
+        cruce_e21 = (c.iloc[-2]<=e21.iloc[-2] and precio>float(e21.iloc[-1]))
 
-            # Cascada: velas verdes consecutivas
-            for i in range(1, min(10, len(c))):
-                if c.iloc[-i] > o.iloc[-i]:
-                    cascada += 1
-                else:
-                    break
+        # Retornos
+        ret1  = (precio - float(c.iloc[-2])) / (float(c.iloc[-2])+1e-10)*100 if n>1 else 0
+        ret6  = (precio - float(c.iloc[-7])) / (float(c.iloc[-7])+1e-10)*100 if n>7 else 0
 
-            # RSI
-            d  = c.diff()
-            g  = d.clip(lower=0).ewm(com=6, adjust=False).mean()
-            ls = (-d.clip(upper=0)).ewm(com=6, adjust=False).mean()
-            rsi_s = 100-(100/(1+g/(ls+1e-10)))
-            rsi_v = float(rsi_s.iloc[-1]) if not pd.isna(rsi_s.iloc[-1]) else 50
+        # Mecha restante
+        mecha_rsi = max(0, min(100, (75-rsi)/45*100))
+        mecha_bb  = max(0, min(100, (1-bb_p)*100))
+        mecha     = mecha_rsi*0.6 + mecha_bb*0.4
+        if rsi > 70: mecha = max(0, mecha-30)
+        mecha = round(mecha, 1)
 
-            # Bollinger
-            if len(c) >= 10:
-                bb_m  = c.rolling(min(10,len(c))).mean()
-                bb_sd = c.rolling(min(10,len(c))).std()
-                bb_u  = bb_m + 2*bb_sd
-                bb_l  = bb_m - 2*bb_sd
-                bb_s  = (c - bb_l)/(bb_u - bb_l + 1e-9)
-                bb_pct_v = float(bb_s.iloc[-1]) if not pd.isna(bb_s.iloc[-1]) else 0.5
+        # Score
+        sc = 0
+        if precio > float(e200.iloc[-1]): sc += 8
+        if float(e9.iloc[-1]) > float(e21.iloc[-1]) > float(e50.iloc[-1]): sc += 15
+        elif float(e9.iloc[-1]) > float(e21.iloc[-1]): sc += 8
+        if cruce_macd: sc += 18
+        elif mh>0 and mh>mhp: sc += 12
+        elif mh>0: sc += 6
+        if vel>0 and vel>velp: sc += 10
+        elif vel>0: sc += 5
+        if vol_r>2: sc += 10
+        elif vol_r>1.5: sc += 7
+        elif vol_r>1.2: sc += 4
+        if 28<=rsi<=55 and rsi>float((100-(100/(1+g/(ls+1e-10)))).iloc[-2] if n>2 else rsi): sc += 12
+        elif 28<=rsi<=60: sc += 7
+        elif rsi>70: sc -= 12
+        if bb_p<0.2: sc += 10
+        elif bb_p<0.4: sc += 6
+        elif bb_p>0.85: sc -= 10
+        if cruce_e21: sc += 8
+        if adx>25: sc += 5
+        sc = max(0, min(100, sc))
 
-            # ATR%
-            tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-            atr = tr.ewm(span=7, adjust=False).mean().iloc[-1]
-            atr_pct = float(atr/precio*100) if precio>0 else 2.0
-
-            # EMAs
-            e9_v  = float(c.ewm(span=9,  adjust=False).mean().iloc[-1])
-            e21_v = float(c.ewm(span=21, adjust=False).mean().iloc[-1])
-
-            # Estabilidad: retornos consistentes
-            rets = [(c.iloc[-i]-c.iloc[-i-1])/(c.iloc[-i-1]+1e-10)*100
-                    for i in range(1, min(7,len(c)))]
-            if rets:
-                consist = sum(1 for r in rets if r>0)/len(rets)*100
-                estabilidad = max(0, min(100,
-                    (1-min(atr_pct,8)/8)*50 + consist*0.5))
+        # Estado
+        if sc>=72 and cascada>=3 and mecha>40:
+            estado="SUBIENDO FUERTE"; ecol="#00ff88"
+        elif sc>=55 and cascada>=2:
+            estado="SUBIDA ACTIVA"; ecol="#44ffaa"
+        elif sc>=40 and cascada>=1:
+            estado="SUBIENDO"; ecol="#ffaa00"
+        elif ret6<-3 or (cascada==0 and mh<0):
+            estado="BAJANDO"; ecol="#ff3355"
         else:
-            # Sin OHLC  estimar cascada con cambios
-            if chg1h > 0 and chg24h > 0: cascada = 2
-            elif chg1h > 0:              cascada = 1
+            estado="LATERAL"; ecol="#4488ff"
 
-        #  Mecha restante 
-        mecha = calcular_mecha_simple(precio, rsi_v, bb_pct_v, chg24h)
+        # Mecha texto
+        if mecha>=70:   mecha_txt="MUCHA"
+        elif mecha>=45: mecha_txt="MEDIA"
+        elif mecha>=25: mecha_txt="POCA"
+        else:           mecha_txt="AGOTADA"
 
-        #  Score global 
-        score = 0
+        # ATR estabilidad
+        if atr_pct<1.5:   atr_txt="MUY ESTABLE"
+        elif atr_pct<3:   atr_txt="ESTABLE"
+        elif atr_pct<6:   atr_txt="VOLATIL"
+        else:             atr_txt="MUY VOLATIL"
 
-        # Cascada (0-28)
-        if cascada >= 5:   score += 28
-        elif cascada >= 3: score += 20
-        elif cascada >= 2: score += 13
-        elif cascada >= 1: score += 7
-
-        # Mecha restante (0-22)
-        score += int(mecha * 0.22)
-
-        # Retornos multitf (0-20)
-        if chg1h > 2:    score += 8
-        elif chg1h > 0:  score += 4
-        if chg24h > 8:   score += 7
-        elif chg24h > 3: score += 4
-        elif chg24h > 0: score += 2
-        if chg7d > 15:   score += 5
-        elif chg7d > 5:  score += 3
-
-        # Volumen vs cap (proxy vol_ratio) (0-15)
-        vol_ratio = vol24h / (cap + 1e-10) * 100 if cap > 0 else 0
-        if vol_ratio > 15:   score += 15
-        elif vol_ratio > 8:  score += 10
-        elif vol_ratio > 4:  score += 6
-        elif vol_ratio > 1:  score += 3
-
-        # EMA alineacin (0-10)
-        if e9_v > e21_v and precio > e9_v:  score += 10
-        elif e9_v > e21_v:                   score += 6
-        elif precio > e21_v:                 score += 3
-
-        # Estabilidad (0-5)
-        score += int(estabilidad * 0.05)
-
-        # Penalizaciones
-        if rsi_v > 78:      score -= 15
-        if bb_pct_v > 0.92: score -= 10
-        if chg24h < -5:     score -= 15
-        if chg1h < -2:      score -= 8
-        if cascada == 0:    score -= 10
-
-        score = max(0, min(100, score))
-
-        #  Estado 
-        if score >= 70 and cascada >= 3 and mecha > 40:
-            estado = "🔥 SUBIENDO FUERTE"; ec = "#00ff88"
-        elif score >= 55 and cascada >= 2:
-            estado = "⚡ SUBIDA ACTIVA";   ec = "#44ffaa"
-        elif score >= 40 and (cascada >= 1 or chg24h > 2):
-            estado = "📈 SUBIENDO";        ec = "#ffaa00"
-        elif chg24h < -5 or (cascada == 0 and chg1h < -1):
-            estado = "📉 BAJANDO";         ec = "#ff3355"
-        else:
-            estado = "↔️ LATERAL";         ec = "#4488ff"
-
-        #  Mecha texto 
-        if mecha >= 70:   mecha_txt = "🟢 MUCHA"
-        elif mecha >= 45: mecha_txt = "🟡 MEDIA"
-        elif mecha >= 25: mecha_txt = "🟠 POCA"
-        else:             mecha_txt = "🔴 AGOTADA"
-
-        #  ATR estabilidad 
-        if atr_pct < 1.5:   atr_txt = "🟢 MUY ESTABLE"
-        elif atr_pct < 3:   atr_txt = "🟡 ESTABLE"
-        elif atr_pct < 6:   atr_txt = "🟠 VOLÁTIL"
-        else:               atr_txt = "🔴 MUY VOLÁTIL"
+        pfmt = f"${precio:,.6f}" if precio<1 else f"${precio:,.4f}" if precio<10 else f"${precio:,.2f}"
 
         return {
-            "id":         cid,
-            "symbol":     sym,
-            "score":      score,
-            "estado":     estado,
-            "estado_col": ec,
-            "precio":     precio,
-            "chg1h":      round(chg1h,  2),
-            "chg24h":     round(chg24h, 2),
-            "chg7d":      round(chg7d,  2),
-            "cascada":    cascada,
-            "mecha":      round(mecha,  1),
-            "mecha_txt":  mecha_txt,
-            "rsi":        round(rsi_v,  1),
-            "bb_pct":     round(bb_pct_v,3),
-            "atr_pct":    round(atr_pct, 2),
-            "atr_txt":    atr_txt,
-            "estabilidad":round(estabilidad,1),
-            "vol_ratio":  round(vol_ratio, 2),
-            "e9":         e9_v,
-            "e21":        e21_v,
+            "sym":sym_display,"binance_sym":sym_binance,
+            "precio":precio,"pfmt":pfmt,
+            "score":sc,"estado":estado,"ecol":ecol,
+            "cascada":cascada,"mecha":mecha,"mecha_txt":mecha_txt,
+            "atr_pct":round(atr_pct,2),"atr_abs":atr,"atr_txt":atr_txt,
+            "rsi":round(rsi,1),"adx":round(adx,1),"bb_p":round(bb_p,3),
+            "vol_ratio":round(vol_r,2),"ret1":round(ret1,2),"ret6":round(ret6,2),
+            "p9":round(p9,3),"p21":round(p21,3),
+            "cruce_macd":cruce_macd,"cruce_e21":cruce_e21,
+            "dip":round(dip,1),"dim":round(dim,1),
         }
     except:
         return None
 
 
-#  UI 
+# ---- UI SCANNER BITSO ----------------------------------------
 st.sidebar.divider()
-st.sidebar.markdown("**🔥 SCANNER BITSO**")
+st.sidebar.markdown("**SCANNER BITSO**")
 with st.sidebar:
-    tf_cg = st.selectbox("⏱ Período OHLC:",
-        ["1 día (velas 30min)", "7 días (velas 4H)", "14 días (velas diarias)"],
-        key="tf_cg", index=1)
-    run_cg = st.button("🔥 ESCANEAR BITSO", use_container_width=True, key="btn_cg")
+    tf_scan_sel = st.selectbox("Timeframe scanner:",
+        ["1H · 3 dias","4H · 10 dias","1D · 30 dias"],
+        key="tf_scan_sel")
+    run_scan = st.button("ESCANEAR AHORA",
+                         use_container_width=True, key="btn_scan")
 
-if run_cg:
+if run_scan:
     st.divider()
-    st.markdown("## 🔥 SCANNER BITSO")
+    st.markdown("## SCANNER BITSO")
 
-    dias_cg_map = {
-        "1 día (velas 30min)":    1,
-        "7 días (velas 4H)":      7,
-        "14 días (velas diarias)":14,
+    tf_scan_map = {
+        "1H · 3 dias":  ("1h", 3),
+        "4H · 10 dias": ("4h",10),
+        "1D · 30 dias": ("1d",30),
     }
-    dias_cg = dias_cg_map[tf_cg]
+    iv_sc, d_sc = tf_scan_map[tf_scan_sel]
 
-    #  Paso 1: datos de mercado (rpido) 
-    with st.spinner("📡 Obteniendo precios de mercado..."):
-        market_data = cg_get_markets()
-        time.sleep(1)   # respetar rate limit CoinGecko
+    prog_sc = st.progress(0)
+    resultados_sc = []
+    total_sc = len(SCANNER_BITSO_PARES)
+    for i_sc,(sym_bn,sym_dp) in enumerate(SCANNER_BITSO_PARES):
+        prog_sc.progress((i_sc+1)/total_sc, text=f"Analizando {sym_dp}...")
+        res_sc = analizar_par_scanner(sym_bn, sym_dp, iv_sc, d_sc)
+        if res_sc: resultados_sc.append(res_sc)
+        time.sleep(0.05)
+    prog_sc.empty()
 
-    if not market_data:
-        st.error("""
-        ❌ No se pudieron obtener datos de CoinGecko.
-        
-        **Soluciones:**
-        - Espera 60 segundos y vuelve a intentarlo (límite de peticiones)
-        - CoinGecko free permite ~10-30 req/min
-        """)
-    else:
-        # Mapear market data por id
-        market_map = {c["id"]: c for c in market_data}
+    resultados_sc.sort(key=lambda x: x["score"], reverse=True)
+    subiendo = [r for r in resultados_sc if "SUBIENDO" in r["estado"]]
+    lateral  = [r for r in resultados_sc if "LATERAL"  in r["estado"]]
+    bajando  = [r for r in resultados_sc if "BAJANDO"  in r["estado"]]
 
-        #  Paso 2: OHLC por coin 
-        prog_cg = st.progress(0)
-        resultados_cg = []
-        total_cg = len(COINS_BITSO)
+    st.caption(f"{len(resultados_sc)} pares analizados · "
+               f"SUBIENDO: {len(subiendo)} · LATERAL: {len(lateral)} · BAJANDO: {len(bajando)}")
 
-        for i_cg, (cid, csym) in enumerate(COINS_BITSO):
-            prog_cg.progress((i_cg+1)/total_cg,
-                            text=f"📊 {csym} ({i_cg+1}/{total_cg})")
-            try:
-                coin_mkt = market_map.get(cid)
-                if not coin_mkt:
-                    continue
-                ohlc = cg_get_ohlc(cid, dias_cg)
-                time.sleep(0.5)   # CoinGecko rate limit
-                res  = analizar_coin_cg(coin_mkt, ohlc)
-                if res:
-                    resultados_cg.append(res)
-            except:
-                pass
-        prog_cg.empty()
+    # Grafico resumen
+    if resultados_sc:
+        fig_sc = plt.figure(figsize=(14,4), facecolor=BG)
+        ax_sc  = fig_sc.add_subplot(1,1,1); estilizar_ax(ax_sc)
+        x_sc   = range(len(resultados_sc))
+        cols_sc= [r["ecol"] for r in resultados_sc]
+        brs_sc = ax_sc.bar(x_sc, [r["score"] for r in resultados_sc],
+                          color=cols_sc, alpha=0.85, width=0.7)
+        for xi,r in enumerate(resultados_sc):
+            if r["score"]>=50:
+                ax_sc.text(xi, r["score"]+1, str(r["score"]),
+                          ha="center", fontsize=6.5, color="white", fontweight="bold")
+            if r["cascada"]>0:
+                ax_sc.text(xi, r["score"]/2, str(r["cascada"]),
+                          ha="center", fontsize=7, color="white")
+        ax_sc.axhline(70, color="#00ff88", lw=0.8, ls="--", alpha=0.6)
+        ax_sc.axhline(50, color="#ffaa00", lw=0.7, ls=":", alpha=0.5)
+        ax_sc.set_xticks(list(x_sc))
+        ax_sc.set_xticklabels([r["sym"] for r in resultados_sc],
+                              rotation=35, ha="right", fontsize=7.5, color="#4a6060")
+        ax_sc.set_ylim(0,112); ax_sc.set_yticks([])
+        ax_sc.set_title(f"Mapa del mercado Bitso · {tf_scan_sel} · numero en barra = velas verdes",
+                       color="#4488ff", fontsize=9)
+        plt.tight_layout(); render_fig(fig_sc)
 
-        if not resultados_cg:
-            st.error("No se pudieron analizar los pares. Intenta en 1 minuto.")
+    # Tabs
+    tab_sub, tab_atr, tab_mecha, tab_todos = st.tabs([
+        f"SUBIENDO ({len(subiendo)})",
+        "MAS ESTABLES (ATR)",
+        "MECHA RESTANTE",
+        "TODOS",
+    ])
+
+    with tab_sub:
+        if not subiendo:
+            st.info("No hay pares claramente alcistas ahora. Prueba 4H o 1D.")
         else:
-            resultados_cg.sort(key=lambda x: x["score"], reverse=True)
+            for row_s in range(0, min(9,len(subiendo)), 3):
+                fila_s = subiendo[row_s:row_s+3]
+                cols_s = st.columns(len(fila_s))
+                for r,col_s in zip(fila_s,cols_s):
+                    velas = "\U0001f7e9"*r["cascada"] + "\u2b1c"*max(0,5-r["cascada"])
+                    col_s.markdown(f"""
+                    <div style="background:#08090f;border:1.5px solid {r['ecol']};
+                                border-radius:10px;padding:11px 13px;margin-bottom:7px;
+                                font-family:'Share Tech Mono',monospace">
+                        <div style="font-family:'Orbitron',monospace;color:{r['ecol']};
+                                    font-size:0.95rem;font-weight:700">{r['sym']}/USDT</div>
+                        <div style="font-size:0.68rem;color:#4488ff;margin:1px 0">{r['estado']}</div>
+                        <div style="font-size:1.2rem;font-weight:700;color:{r['ecol']}">{r['pfmt']}</div>
+                        <div style="font-size:0.88rem;margin:3px 0">{velas}</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;font-size:0.7rem">
+                            <div>1v: <span style="color:{'#00ff88' if r['ret1']>=0 else '#ff3355'}">{r['ret1']:+.2f}%</span></div>
+                            <div>6v: <span style="color:{'#00ff88' if r['ret6']>=0 else '#ff3355'}">{r['ret6']:+.1f}%</span></div>
+                            <div>RSI: <span style="color:#ff8844">{r['rsi']}</span></div>
+                            <div>ADX: <span style="color:#44aaff">{r['adx']:.0f}</span></div>
+                            <div>Mecha: <span style="color:{r['ecol']}">{r['mecha_txt']}</span></div>
+                            <div>Score: <span style="color:{r['ecol']};font-weight:700">{r['score']}</span></div>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
 
-            subiendo = [r for r in resultados_cg if "SUBIENDO" in r["estado"] or "FUERTE" in r["estado"]]
-            lateral  = [r for r in resultados_cg if "LATERAL"  in r["estado"]]
-            bajando  = [r for r in resultados_cg if "BAJANDO"  in r["estado"]]
+    with tab_atr:
+        st.caption("Subidas mas estables: ATR bajo + score alto = movimiento controlado, no pump")
+        estables = sorted([r for r in resultados_sc if r["score"]>=40 and r["ret6"]>=0],
+                         key=lambda x: x["atr_pct"])
+        if not estables:
+            st.info("No hay pares en subida estable ahora.")
+        else:
+            fig_atr = plt.figure(figsize=(14,5), facecolor=BG)
+            ax_atr  = fig_atr.add_subplot(1,1,1); estilizar_ax(ax_atr)
+            for r in estables:
+                ax_atr.scatter(r["atr_pct"], r["score"], s=r["score"]*3,
+                              color=r["ecol"], alpha=0.8, zorder=3)
+                ax_atr.annotate(r["sym"],(r["atr_pct"],r["score"]),
+                               xytext=(4,4),textcoords="offset points",
+                               fontsize=7.5,color="#c0d8ff")
+            ax_atr.axvline(3,color="#ffaa00",lw=1,ls="--",alpha=0.5,label="ATR 3%")
+            ax_atr.axhline(60,color="#00ff88",lw=0.8,ls=":",alpha=0.5)
+            ax_atr.set_xlabel("ATR% (izquierda=estable  derecha=volatil)",color="#2a4060",fontsize=8)
+            ax_atr.set_ylabel("Score",color="#2a4060",fontsize=8)
+            ax_atr.set_title("Ideal: arriba-izquierda (score alto + ATR bajo)",color="#4488ff",fontsize=9)
+            ax_atr.legend(fontsize=7,framealpha=0.3)
+            plt.tight_layout(); render_fig(fig_atr)
+            filas_at=[{"Par":r["sym"]+"/USDT","ATR%":r["atr_pct"],"Estabilidad":r["atr_txt"],"Score":r["score"],"Mecha":r["mecha_txt"],"RSI":r["rsi"],"ADX":r["adx"],"1v%":f"{r['ret1']:+.2f}%","6v%":f"{r['ret6']:+.1f}%","Precio":r["pfmt"]} for r in estables[:15]]
+            st.dataframe(pd.DataFrame(filas_at),use_container_width=True,hide_index=True,
+                        column_config={"Score":st.column_config.ProgressColumn("Score",min_value=0,max_value=100,format="%d"),"ATR%":st.column_config.NumberColumn("ATR%",format="%.2f")})
 
-            st.caption(f"✅ {len(resultados_cg)} pares analizados · 🔥 {len(subiendo)} subiendo · ↔️ {len(lateral)} lateral · 📉 {len(bajando)} bajando")
+    with tab_mecha:
+        st.caption("Mecha restante: cuanto le queda a la subida antes de agotarse")
+        con_mec = sorted([r for r in resultados_sc if r["cascada"]>=1 or r["ret6"]>2],
+                        key=lambda x:x["mecha"],reverse=True)
+        if not con_mec:
+            st.info("No hay pares en movimiento activo.")
+        else:
+            fig_mec = plt.figure(figsize=(14,max(4,len(con_mec)*0.38)),facecolor=BG)
+            ax_mec  = fig_mec.add_subplot(1,1,1); estilizar_ax(ax_mec)
+            syms_m=[r["sym"] for r in con_mec]; mechas_m=[r["mecha"] for r in con_mec]
+            cols_m=["#00ff88" if m>=70 else("#ffaa00" if m>=45 else("#ff8844" if m>=25 else "#ff3355")) for m in mechas_m]
+            y_m=range(len(syms_m))
+            brs_m=ax_mec.barh(list(y_m),mechas_m,color=cols_m,alpha=0.85,height=0.65)
+            ax_mec.set_yticks(list(y_m)); ax_mec.set_yticklabels(syms_m,fontsize=8,color="#4a6060")
+            for bar_m,r in zip(brs_m,con_mec):
+                ax_mec.text(bar_m.get_width()+0.5,bar_m.get_y()+bar_m.get_height()/2,
+                           f"{r['mecha']:.0f}% RSI:{r['rsi']} {r['ret6']:+.1f}%6v",
+                           va="center",fontsize=6.5,color="white")
+            ax_mec.axvline(70,color="#00ff88",lw=1,ls="--",alpha=0.6,label="Mucha mecha")
+            ax_mec.axvline(25,color="#ff3355",lw=1,ls="--",alpha=0.6,label="Poca mecha")
+            ax_mec.set_xlim(0,120); ax_mec.legend(fontsize=7,framealpha=0.3)
+            ax_mec.set_title("Mecha restante por par",color="#4488ff",fontsize=9)
+            plt.tight_layout(); render_fig(fig_mec)
+            filas_m=[{"Par":r["sym"]+"/USDT","Mecha%":r["mecha"],"Estado":r["mecha_txt"],"RSI":r["rsi"],"BB%B":r["bb_p"],"1v%":f"{r['ret1']:+.2f}%","6v%":f"{r['ret6']:+.1f}%","Score":r["score"],"Precio":r["pfmt"]} for r in con_mec]
+            st.dataframe(pd.DataFrame(filas_m),use_container_width=True,hide_index=True,
+                        column_config={"Mecha%":st.column_config.ProgressColumn("Mecha%",min_value=0,max_value=100,format="%.0f"),"Score":st.column_config.ProgressColumn("Score",min_value=0,max_value=100,format="%d")})
 
-            # ============================================
-            #  MAPA VISUAL DEL MERCADO
-            # ============================================
-            fig_mp = plt.figure(figsize=(14, 5), facecolor=BG)
-            ax_mp  = fig_mp.add_subplot(1,1,1); estilizar_ax(ax_mp)
+    with tab_todos:
+        filas_t=[{"Par":r["sym"]+"/USDT","Estado":r["estado"],"Score":r["score"],"Cascada":r["cascada"],"Mecha%":r["mecha"],"ATR%":r["atr_pct"],"RSI":r["rsi"],"ADX":r["adx"],"1v%":f"{r['ret1']:+.2f}%","6v%":f"{r['ret6']:+.1f}%","Vol":f"{r['vol_ratio']}x","MACD":"Si" if r["cruce_macd"] else "-","E21":"Si" if r["cruce_e21"] else "-","Precio":r["pfmt"]} for r in resultados_sc]
+        st.dataframe(pd.DataFrame(filas_t),use_container_width=True,hide_index=True,
+                    column_config={"Score":st.column_config.ProgressColumn("Score",min_value=0,max_value=100,format="%d"),"Mecha%":st.column_config.ProgressColumn("Mecha%",min_value=0,max_value=100,format="%.0f"),"Cascada":st.column_config.NumberColumn("Cascada",format="%d")})
 
-            syms_mp  = [r["symbol"] for r in resultados_cg]
-            scrs_mp  = [r["score"]  for r in resultados_cg]
-            cols_mp  = []
-            for r in resultados_cg:
-                if r["score"] >= 70:   cols_mp.append("#00ff88")
-                elif r["score"] >= 55: cols_mp.append("#44ffaa")
-                elif r["score"] >= 40: cols_mp.append("#ffaa00")
-                elif "BAJANDO" in r["estado"]: cols_mp.append("#ff3355")
-                else: cols_mp.append("#334466")
+    # Selector para agregar al seguimiento
+    st.divider()
+    st.markdown("### Agregar al seguimiento")
+    opciones_sc = [f"{r['sym']} - Score {r['score']} - {r['estado']} - {r['pfmt']}" for r in resultados_sc]
+    sel_sc_col1, sel_sc_col2 = st.columns([3,1])
+    sel_sc = sel_sc_col1.selectbox("Elige un par:", opciones_sc, key="sel_scan_par", label_visibility="collapsed")
+    if sel_sc_col2.button("AGREGAR", key="btn_scan_agregar"):
+        r_sel = resultados_sc[[r["sym"] for r in resultados_sc].index(sel_sc.split(" -")[0])]
+        st.info(f"{r_sel['sym']} seleccionado - Desplazate al fondo para agregarlo al seguimiento con tu monto y precio")
 
-            x_mp = np.arange(len(syms_mp))
-            brs_mp = ax_mp.bar(x_mp, scrs_mp, color=cols_mp, alpha=0.85, width=0.7, zorder=3)
-
-            for xi, r in enumerate(resultados_cg):
-                # Nmero de velas verdes
-                if r["cascada"] > 0:
-                    ax_mp.text(xi, r["score"]+1.5, f"🕯{r['cascada']}",
-                              ha="center", va="bottom", fontsize=7, color="white")
-                if r["score"] >= 50:
-                    ax_mp.text(xi, r["score"]/2, str(r["score"]),
-                              ha="center", va="center", fontsize=7,
-                              color="black", fontweight="bold")
-
-            ax_mp.axhline(70, color="#00ff88", lw=1,   ls="--", alpha=0.6, label="🔥 Fuerte")
-            ax_mp.axhline(55, color="#ffaa00", lw=0.8, ls=":",  alpha=0.5, label="⚡ Activo")
-            ax_mp.set_xticks(x_mp)
-            ax_mp.set_xticklabels(syms_mp, rotation=40, ha="right", fontsize=7.5, color="#4a6080")
-            ax_mp.set_ylim(0, 115)
-            ax_mp.set_ylabel("Score", color="#2a4060", fontsize=8)
-            ax_mp.set_title(f"Mapa del Mercado Bitso — {tf_cg} · 🕯N = velas verdes consecutivas",
-                           color="#4488ff", fontsize=9)
-            ax_mp.legend(fontsize=7, framealpha=0.3, loc="upper right")
-            ax_mp.grid(axis="y", color="#0d1a2e", lw=0.5, alpha=0.4)
-            plt.tight_layout(); render_fig(fig_mp)
-
-            # ============================================
-            #  TABS
-            # ============================================
-            tab_sub, tab_atr, tab_mecha, tab_todos = st.tabs([
-                f"🔥 Subiendo ({len(subiendo)})",
-                "📏 Más Estables (ATR)",
-                "🕯 Mecha Restante",
-                "📋 Todos",
-            ])
-
-            #  TAB SUBIENDO 
-            with tab_sub:
-                if not subiendo:
-                    st.info("No hay pares claramente alcistas ahora. Prueba '7 días (velas 4H)'.")
-                else:
-                    for i_row in range(0, min(9, len(subiendo)), 3):
-                        fila = subiendo[i_row:i_row+3]
-                        cols_f = st.columns(len(fila))
-                        for col_f, r in zip(cols_f, fila):
-                            pf   = r["precio"]
-                            pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                            velas_html = "🟩"*r["cascada"] + "⬜"*max(0,6-r["cascada"])
-                            c24_col = "#00ff88" if r["chg24h"] > 0 else "#ff3355"
-                            c1h_col = "#00ff88" if r["chg1h"]  > 0 else "#ff3355"
-                            col_f.markdown(f"""
-                            <div style="background:#08090f;border:1.5px solid {r['estado_col']};
-                                        border-radius:10px;padding:12px 14px;
-                                        font-family:'Share Tech Mono',monospace;margin-bottom:8px">
-                                <div style="font-family:'Orbitron',monospace;font-size:1rem;
-                                            color:{r['estado_col']};font-weight:700">{r['symbol']}/USDT</div>
-                                <div style="font-size:0.68rem;color:#4488ff">{r['estado']}</div>
-                                <div style="font-size:1.3rem;font-weight:700;
-                                            color:{r['estado_col']};margin:3px 0">{pfmt}</div>
-                                <div style="font-size:0.9rem;margin:4px 0">
-                                    {velas_html}
-                                    <span style="font-size:0.68rem;color:#4a6080"> {r['cascada']} velas</span>
-                                </div>
-                                <div style="display:grid;grid-template-columns:1fr 1fr;
-                                            gap:3px;margin-top:6px;font-size:0.72rem">
-                                    <div>1H: <span style="color:{c1h_col}">{r['chg1h']:+.2f}%</span></div>
-                                    <div>24H: <span style="color:{c24_col}">{r['chg24h']:+.2f}%</span></div>
-                                    <div>7D: <span style="color:{'#00ff88' if r['chg7d']>0 else '#ff3355'}">{r['chg7d']:+.1f}%</span></div>
-                                    <div>RSI: <span style="color:#ff8844">{r['rsi']}</span></div>
-                                    <div>Mecha: <span style="color:{r['estado_col']}">{r['mecha_txt']}</span></div>
-                                    <div>ATR: <span style="color:#ffaa00">{r['atr_pct']}%</span></div>
-                                </div>
-                                <div style="margin-top:6px;font-size:0.7rem;color:#2a4060">
-                                    Score: <b style="color:{r['estado_col']};font-size:0.9rem">{r['score']}/100</b>
-                                </div>
-                            </div>""", unsafe_allow_html=True)
-
-            #  TAB ATR / ESTABILIDAD 
-            with tab_atr:
-                st.markdown("**Subidas más estables — menor ATR% = movimiento más controlado:**")
-                estables = sorted(
-                    [r for r in resultados_cg if r["score"]>=38 and r["chg24h"]>=0],
-                    key=lambda x: x["atr_pct"]
-                )
-                if not estables:
-                    st.info("No hay pares en subida estable ahora.")
-                else:
-                    # Scatter ATR% vs score
-                    fig_atr = plt.figure(figsize=(14,5), facecolor=BG)
-                    ax_at = fig_atr.add_subplot(1,1,1); estilizar_ax(ax_at)
-                    for r in estables:
-                        ax_at.scatter(r["atr_pct"], r["score"],
-                                     s=r["score"]*3, color=r["estado_col"], alpha=0.8, zorder=3)
-                        ax_at.annotate(r["symbol"],
-                                      (r["atr_pct"], r["score"]),
-                                      xytext=(4,4), textcoords="offset points",
-                                      fontsize=8, color="#c0d8ff")
-                    ax_at.axvline(3, color="#ffaa00", lw=1, ls="--", alpha=0.5, label="ATR 3%")
-                    ax_at.axhline(60, color="#00ff88", lw=0.8, ls=":", alpha=0.5)
-                    ax_at.set_xlabel("ATR% (← estable | volátil →)", color="#2a4060", fontsize=8)
-                    ax_at.set_ylabel("Score", color="#2a4060", fontsize=8)
-                    ax_at.set_title("Ideal: arriba-izquierda (alto score + bajo ATR)", color="#4488ff", fontsize=9)
-                    ax_at.legend(fontsize=7, framealpha=0.3)
-                    plt.tight_layout(); render_fig(fig_atr)
-
-                    filas_at = []
-                    for r in estables[:15]:
-                        pf = r["precio"]
-                        pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                        filas_at.append({
-                            "Par":        r["symbol"]+"/USDT",
-                            "ATR%":       r["atr_pct"],
-                            "Estab.":     r["atr_txt"],
-                            "Score":      r["score"],
-                            "🕯 Velas":   r["cascada"],
-                            "Mecha":      r["mecha_txt"],
-                            "1H%":       f"{r['chg1h']:+.2f}%",
-                            "24H%":      f"{r['chg24h']:+.2f}%",
-                            "7D%":       f"{r['chg7d']:+.1f}%",
-                            "RSI":        r["rsi"],
-                            "Precio":     pfmt,
-                        })
-                    st.dataframe(pd.DataFrame(filas_at), use_container_width=True, hide_index=True,
-                                column_config={
-                                    "ATR%":    st.column_config.NumberColumn("ATR%", format="%.2f"),
-                                    "Score":   st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%d"),
-                                    "🕯 Velas":st.column_config.NumberColumn("🕯 Velas", format="%d"),
-                                })
-
-            #  TAB MECHA 
-            with tab_mecha:
-                st.markdown("**¿Cuánto le queda a cada subida?**")
-                st.caption("🟢 Mucha = puede seguir. 🔴 Agotada = posible reversión pronto.")
-                con_mec = sorted(
-                    [r for r in resultados_cg if r["cascada"]>=1 or r["chg24h"]>2],
-                    key=lambda x: x["mecha"], reverse=True
-                )
-                if not con_mec:
-                    st.info("No hay pares en movimiento activo.")
-                else:
-                    fig_mec = plt.figure(figsize=(14, max(4, len(con_mec)*0.38)), facecolor=BG)
-                    ax_mec  = fig_mec.add_subplot(1,1,1); estilizar_ax(ax_mec)
-                    syms_mec  = [r["symbol"] for r in con_mec]
-                    mechas_mec= [r["mecha"]  for r in con_mec]
-                    cols_mec  = ["#00ff88" if m>=70 else("#ffaa00" if m>=45 else("#ff8844" if m>=25 else "#ff3355"))
-                                 for m in mechas_mec]
-                    y_pos = np.arange(len(syms_mec))
-                    brs_mec = ax_mec.barh(y_pos, mechas_mec, color=cols_mec, alpha=0.85, height=0.65)
-                    ax_mec.set_yticks(y_pos)
-                    ax_mec.set_yticklabels(syms_mec, fontsize=8, color="#4a6080")
-                    for bar, r in zip(brs_mec, con_mec):
-                        ax_mec.text(bar.get_width()+0.5, bar.get_y()+bar.get_height()/2,
-                                   f"{r['mecha']:.0f}% · RSI:{r['rsi']} · {r['chg24h']:+.1f}%24h",
-                                   va="center", fontsize=7, color="white")
-                    ax_mec.axvline(70, color="#00ff88", lw=1, ls="--", alpha=0.6, label="Mucha mecha")
-                    ax_mec.axvline(25, color="#ff3355", lw=1, ls="--", alpha=0.6, label="Poca mecha")
-                    ax_mec.set_xlim(0, 120)
-                    ax_mec.set_title("Mecha Restante → puede seguir subiendo", color="#4488ff", fontsize=9)
-                    ax_mec.legend(fontsize=7, framealpha=0.3)
-                    plt.tight_layout(); render_fig(fig_mec)
-
-                    filas_mec = []
-                    for r in con_mec:
-                        pf = r["precio"]
-                        pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                        filas_mec.append({
-                            "Par":       r["symbol"]+"/USDT",
-                            "Mecha %":   r["mecha"],
-                            "Estado":    r["mecha_txt"],
-                            "RSI":       r["rsi"],
-                            "BB %B":     r["bb_pct"],
-                            "1H%":      f"{r['chg1h']:+.2f}%",
-                            "24H%":     f"{r['chg24h']:+.2f}%",
-                            "7D%":      f"{r['chg7d']:+.1f}%",
-                            "Score":     r["score"],
-                            "Precio":    pfmt,
-                        })
-                    st.dataframe(pd.DataFrame(filas_mec), use_container_width=True, hide_index=True,
-                                column_config={
-                                    "Mecha %": st.column_config.ProgressColumn("Mecha %", min_value=0, max_value=100, format="%.0f"),
-                                    "Score":   st.column_config.ProgressColumn("Score",   min_value=0, max_value=100, format="%d"),
-                                })
-
-            #  TAB TODOS 
-            with tab_todos:
-                filas_td = []
-                for r in resultados_cg:
-                    pf = r["precio"]
-                    pfmt = f"${pf:,.6f}" if pf<1 else f"${pf:,.4f}" if pf<10 else f"${pf:,.2f}"
-                    filas_td.append({
-                        "Par":      r["symbol"]+"/USDT",
-                        "Estado":   r["estado"],
-                        "Score":    r["score"],
-                        "🕯 Velas": r["cascada"],
-                        "Mecha":    r["mecha"],
-                        "ATR%":     r["atr_pct"],
-                        "RSI":      r["rsi"],
-                        "1H%":     f"{r['chg1h']:+.2f}%",
-                        "24H%":    f"{r['chg24h']:+.2f}%",
-                        "7D%":     f"{r['chg7d']:+.1f}%",
-                        "Precio":   pfmt,
-                    })
-                st.dataframe(pd.DataFrame(filas_td), use_container_width=True, hide_index=True,
-                            column_config={
-                                "Score":    st.column_config.ProgressColumn("Score",  min_value=0, max_value=100, format="%d"),
-                                "Mecha":    st.column_config.ProgressColumn("Mecha%", min_value=0, max_value=100, format="%.0f"),
-                                "🕯 Velas": st.column_config.NumberColumn("🕯 Velas", format="%d"),
-                                "ATR%":     st.column_config.NumberColumn("ATR%",     format="%.2f"),
-                            })
-
-            #  SELECTOR  ANLISIS + AGREGAR AL LIVE 
-            st.divider()
-            st.markdown("### 🎯 Seleccionar par")
-            opciones_sel = [
-                f"{r['symbol']} — Score {r['score']} · {r['estado']} · 24H: {r['chg24h']:+.1f}%"
-                for r in resultados_cg
-            ]
-            sel_col1, sel_col2, sel_col3 = st.columns([3,1,1])
-            sel_par = sel_col1.selectbox(
-                "Elige un par:",
-                opciones_sel, key="sel_cg",
-                label_visibility="collapsed"
-            )
-            if sel_par:
-                sym_sel = sel_par.split(" —")[0].strip()
-                # Botn: agregar al monitor Live
-                if sel_col2.button("📡 Agregar al Live", key="add_live_btn"):
-                    st.session_state.agregar_a_live = sym_sel
-                    st.success(f"✅ **{sym_sel}** agregado al monitor Live")
-                # Botn: abrir en motor principal
-                if sel_col3.button("⚛️ Analizar", key="analizar_btn"):
-                    st.info(f"Escribe **{sym_sel}** en el buscador del sidebar → presiona ⚛️ ANALIZAR v4")
-
-
-
-# ==============================================================
 #  AI.LINO LIVE v2  Monitor en Tiempo Real
 #    Mejoras: fix HTML  Supabase  ScannerLive  Auto-anlisis
 # ==============================================================
