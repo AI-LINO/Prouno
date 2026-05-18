@@ -3011,19 +3011,31 @@ if run_apex:
                             if cid_btn:
                                 import uuid as _uuid
                                 _btn_key = f"apex_live_{r['sym']}_{str(_uuid.uuid4())[:8]}"
-                                if st.button(f"📡 Monitorear {r['sym']}", key=_btn_key):
-                                    wl = st.session_state.live_watchlist
-                                    if (cid_btn,r["sym"]) not in wl:
-                                        wl.append((cid_btn,r["sym"]))
-                                        st.session_state.live_watchlist = wl
-                                        supa_guardar_watchlist(wl)
-                                    # Guardar señal en Supabase
+                                if st.button(f"🎯 SEGUIR EN VIVO — {r['sym']}", key=_btn_key,
+                                            type="primary"):
+                                    # Registrar posición activa con todos los datos
+                                    st.session_state.posicion_activa = {
+                                        "sym":      r["sym"],
+                                        "cid":      cid_btn,
+                                        "entry":    r["precio"],
+                                        "sl":       r["sl"],
+                                        "tp1":      r["tp1"],
+                                        "tp2":      r["tp2"],
+                                        "tp3":      r["tp3"],
+                                        "trail":    r["trail"],
+                                        "atr":      r["atr_pct"],
+                                        "score":    r["apex_score"],
+                                        "tiempo":   datetime.utcnow().isoformat(),
+                                        "trail_sl": r["sl"],   # SL dinámico actual
+                                        "max_precio": r["precio"],  # precio máximo visto
+                                    }
+                                    st.session_state.ver_seguimiento = True
                                     supa_guardar_apex_signal(
                                         r["sym"],"ENTRADA",r["precio"],
                                         r["apex_score"],r["sl"],r["tp1"],r["tp2"],
                                         str(r["f1_det"])
                                     )
-                                    st.success(f"✅ {r['sym']} agregado al monitor Live")
+                                    st.rerun()
 
                 st.markdown("&nbsp;")
 
@@ -3119,3 +3131,553 @@ if run_apex:
             · Añadir al monitor Live para seguimiento automático
         </div>
         """, unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════
+# 🎯 SEGUIMIENTO EN TIEMPO REAL — Posición Activa
+#    Se activa cuando el usuario da clic en "SEGUIR EN VIVO"
+#    Muestra todo lo necesario para saber CUÁNDO SALIR
+# ══════════════════════════════════════════════════════════════
+
+# Inicializar estados
+if "posicion_activa" not in st.session_state:
+    st.session_state.posicion_activa  = None
+if "ver_seguimiento" not in st.session_state:
+    st.session_state.ver_seguimiento  = False
+if "historial_precios" not in st.session_state:
+    st.session_state.historial_precios = []   # lista de precios capturados
+
+
+@st.cache_data(ttl=30)   # refresca cada 30 segundos
+def get_precio_live(coin_id):
+    """Precio actual en tiempo real desde CoinGecko."""
+    try:
+        r = requests.get(f"{CG}/simple/price", params={
+            "ids": coin_id,
+            "vs_currencies": "usd",
+            "include_24hr_change": "true",
+            "include_1hr_change":  "true",
+        }, timeout=8)
+        if r.status_code == 200:
+            data = r.json().get(coin_id, {})
+            return {
+                "precio":  data.get("usd", 0),
+                "chg1h":   data.get("usd_1h_change", 0) or 0,
+                "chg24h":  data.get("usd_24h_change", 0) or 0,
+            }
+    except:
+        pass
+    return None
+
+
+@st.cache_data(ttl=45)
+def get_ohlc_seguimiento(coin_id):
+    """OHLC 2 días para calcular indicadores en tiempo real."""
+    try:
+        r = requests.get(f"{CG}/coins/{coin_id}/ohlc",
+                        params={"vs_currency":"usd","days":2}, timeout=10)
+        if r.status_code == 200 and r.json():
+            df = pd.DataFrame(r.json(), columns=["ts","Open","High","Low","Close"])
+            df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+            df.set_index("ts", inplace=True)
+            return df.astype(float)
+    except:
+        pass
+    return None
+
+
+def calcular_fuerza_actual(df_ohlc, precio_actual):
+    """
+    Calcula la fuerza alcista ACTUAL y los indicadores de salida.
+    Retorna dict con todo lo necesario para la pantalla de seguimiento.
+    """
+    if df_ohlc is None or len(df_ohlc) < 8:
+        return None
+    try:
+        c = df_ohlc["Close"].copy()
+        # Reemplazar último cierre con precio actual
+        c.iloc[-1] = precio_actual
+
+        h = df_ohlc["High"]; l = df_ohlc["Low"]
+
+        # EMAs
+        e9  = c.ewm(span=9,  adjust=False).mean()
+        e21 = c.ewm(span=21, adjust=False).mean()
+        e50 = c.ewm(span=50, adjust=False).mean()
+
+        # RSI
+        d   = c.diff()
+        g   = d.clip(lower=0).ewm(com=6, adjust=False).mean()
+        ls  = (-d.clip(upper=0)).ewm(com=6, adjust=False).mean()
+        rsi = float((100-(100/(1+g/(ls+1e-10)))).iloc[-1])
+        if np.isnan(rsi): rsi = 50.0
+
+        # MACD
+        ef   = c.ewm(span=12, adjust=False).mean()
+        es_m = c.ewm(span=26, adjust=False).mean()
+        macd = ef - es_m
+        msig = macd.ewm(span=9, adjust=False).mean()
+        mhist= macd - msig
+        mh   = float(mhist.iloc[-1]) if not np.isnan(mhist.iloc[-1]) else 0
+        mh_p = float(mhist.iloc[-2]) if not np.isnan(mhist.iloc[-2]) else 0
+
+        # Bollinger
+        bb_m = c.rolling(min(10,len(c))).mean()
+        bb_s = c.rolling(min(10,len(c))).std()
+        bb_u = bb_m + 2*bb_s; bb_l = bb_m - 2*bb_s
+        bb_p = float(((c-bb_l)/(bb_u-bb_l+1e-9)).iloc[-1])
+        if np.isnan(bb_p): bb_p = 0.5
+
+        # ADX
+        tr   = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr  = tr.ewm(span=7, adjust=False).mean()
+        dm_p = h.diff().clip(lower=0); dm_n = (-l.diff()).clip(lower=0)
+        dm_p = dm_p.where(dm_p>dm_n,0); dm_n = dm_n.where(dm_n>dm_p,0)
+        a14  = tr.ewm(span=7,adjust=False).mean()
+        dip  = (dm_p.ewm(span=7,adjust=False).mean()/(a14+1e-10))*100
+        dim  = (dm_n.ewm(span=7,adjust=False).mean()/(a14+1e-10))*100
+        dx   = ((dip-dim).abs()/(dip+dim+1e-10))*100
+        adx  = float(dx.ewm(span=7,adjust=False).mean().iloc[-1])
+        adx_p= float(dx.ewm(span=7,adjust=False).mean().iloc[-2]) if len(c)>2 else adx
+        dip_v= float(dip.iloc[-1]); dim_v=float(dim.iloc[-1])
+
+        # Kalman velocidad
+        pk   = c.ewm(span=4, adjust=False).mean()
+        vel  = float(pk.diff().iloc[-1])
+        vel_p= float(pk.diff().iloc[-2]) if len(c)>2 else vel
+        acel = vel > vel_p
+
+        # Pendientes EMA
+        p9  = (e9.iloc[-1]-e9.iloc[-4])/(e9.iloc[-4]+1e-10)*100  if len(c)>4 else 0
+        p21 = (e21.iloc[-1]-e21.iloc[-4])/(e21.iloc[-4]+1e-10)*100 if len(c)>4 else 0
+
+        e9v = float(e9.iloc[-1]); e21v=float(e21.iloc[-1])
+
+        # Fuerza alcista 0-100
+        fuerza = 0
+        if p9  > 0: fuerza += min(25, p9*60)
+        if p21 > 0: fuerza += min(20, p21*90)
+        if adx > 25: fuerza += 25
+        elif adx>15: fuerza += 15
+        if dip_v > dim_v: fuerza += min(15,(dip_v-dim_v)*0.5)
+        if vel > 0 and acel: fuerza += 10
+        elif vel > 0:        fuerza += 5
+        if rsi < 65:         fuerza += 5
+        elif rsi > 74:       fuerza -= 15
+        if bb_p > 0.85:      fuerza -= 10
+        fuerza = max(0, min(100, fuerza))
+
+        # ── SEÑALES DE SALIDA ────────────────────────────────
+        señales_salida = []
+        urgencia_salida = 0   # 0=nada, 1=vigilar, 2=preparar, 3=SALIR YA
+
+        # 1. Mecha agotada — más importante
+        if rsi > 74 and bb_p > 0.85:
+            señales_salida.append("🚨 RSI SOBRECOMPRADO + BB TECHO")
+            urgencia_salida = 3
+        elif rsi > 70 and bb_p > 0.75:
+            señales_salida.append("⚠️ RSI alto + BB extendido")
+            urgencia_salida = max(urgencia_salida, 2)
+
+        # 2. MACD bajista
+        if mh < 0 and mh_p >= 0:
+            señales_salida.append("🚨 MACD CRUCE BAJISTA")
+            urgencia_salida = 3
+        elif mh < mh_p and mh_p < 0:
+            señales_salida.append("⚠️ MACD acelerando a la baja")
+            urgencia_salida = max(urgencia_salida, 2)
+
+        # 3. EMA cruce bajista
+        if e9v < e21v:
+            señales_salida.append("🚨 EMA9 CRUZÓ EMA21 ABAJO")
+            urgencia_salida = 3
+
+        # 4. ADX cayendo (tendencia debilitándose)
+        if adx < adx_p and adx < 20:
+            señales_salida.append("⚠️ ADX cayendo — tendencia débil")
+            urgencia_salida = max(urgencia_salida, 1)
+
+        # 5. Kalman bajista
+        if vel < 0 and vel < vel_p:
+            señales_salida.append("⚠️ Velocidad Kalman negativa")
+            urgencia_salida = max(urgencia_salida, 1)
+
+        # 6. Fuerza muy baja
+        if fuerza < 20:
+            señales_salida.append("⚠️ Fuerza alcista agotada")
+            urgencia_salida = max(urgencia_salida, 2)
+
+        return {
+            "rsi": round(rsi,1), "mh": mh, "mh_p": mh_p,
+            "bb_p": round(bb_p,3), "adx": round(adx,1),
+            "adx_p": round(adx_p,1), "dip": round(dip_v,1),
+            "dim": round(dim_v,1), "vel": vel, "acel": acel,
+            "p9": round(p9,3), "p21": round(p21,3),
+            "e9": e9v, "e21": e21v,
+            "fuerza": round(fuerza,1),
+            "señales_salida": señales_salida,
+            "urgencia_salida": urgencia_salida,
+            "atr_actual": float(atr.iloc[-1]) if not np.isnan(atr.iloc[-1]) else 0,
+        }
+    except:
+        return None
+
+
+# ── PANTALLA DE SEGUIMIENTO ───────────────────────────────────
+if st.session_state.get("ver_seguimiento") and st.session_state.get("posicion_activa"):
+    pos = st.session_state.posicion_activa
+
+    # ── Header de posición ──────────────────────────────────
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#001a0a,#001428);
+                border:2px solid #00ff88;border-radius:12px;
+                padding:14px 20px;margin-bottom:12px;
+                font-family:'Orbitron',monospace">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+                <span style="color:#00ff88;font-size:1.3rem;font-weight:700">
+                    🎯 SEGUIMIENTO ACTIVO — {pos['sym']}/USDT
+                </span>
+                <div style="color:#4488ff;font-size:0.72rem;margin-top:2px">
+                    Entrada: {pos['tiempo'][:16].replace('T',' ')} UTC
+                </div>
+            </div>
+            <div style="text-align:right">
+                <div style="color:#2a4060;font-size:0.68rem">Score APEX entrada</div>
+                <div style="color:#00ff88;font-size:1.4rem;font-weight:700">{pos['score']}/100</div>
+            </div>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    # Botón cerrar posición
+    col_hdr1, col_hdr2, col_hdr3 = st.columns([2,1,1])
+    with col_hdr2:
+        if st.button("✅ CERRÉ POSICIÓN", key="cerrar_pos",
+                    help="Marca la posición como cerrada"):
+            st.session_state.ver_seguimiento = False
+            st.session_state.posicion_activa = None
+            st.session_state.historial_precios = []
+            get_precio_live.clear()
+            get_ohlc_seguimiento.clear()
+            st.rerun()
+    with col_hdr3:
+        if st.button("🔄 Actualizar", key="refresh_pos"):
+            get_precio_live.clear()
+            get_ohlc_seguimiento.clear()
+            st.rerun()
+
+    # ── Obtener datos actuales ──────────────────────────────
+    precio_data = get_precio_live(pos["cid"])
+    df_ohlc_seg = get_ohlc_seguimiento(pos["cid"])
+
+    if precio_data is None:
+        st.warning("⏳ Obteniendo datos... (CoinGecko actualiza cada 30-60 seg)")
+        precio_actual = pos["entry"]
+        chg1h = chg24h = 0
+    else:
+        precio_actual = precio_data["precio"]
+        chg1h  = precio_data["chg1h"]
+        chg24h = precio_data["chg24h"]
+
+    # ── Actualizar trailing stop dinámico ───────────────────
+    if precio_actual > pos.get("max_precio", pos["entry"]):
+        pos["max_precio"] = precio_actual
+        # Trail sube con el precio — nunca baja
+        nuevo_trail_sl = precio_actual - pos["trail"]
+        if nuevo_trail_sl > pos.get("trail_sl", pos["sl"]):
+            pos["trail_sl"] = nuevo_trail_sl
+        st.session_state.posicion_activa = pos
+
+    # Guardar historial de precios para mini-gráfico
+    hist = st.session_state.historial_precios
+    if not hist or hist[-1] != precio_actual:
+        hist.append(precio_actual)
+        if len(hist) > 60:   # máx 60 puntos
+            hist = hist[-60:]
+        st.session_state.historial_precios = hist
+
+    # ── Calcular PnL ────────────────────────────────────────
+    entry      = pos["entry"]
+    pnl_pct    = (precio_actual - entry) / (entry + 1e-10) * 100
+    pnl_col    = "#00ff88" if pnl_pct >= 0 else "#ff3355"
+    pfmt_now   = (f"${precio_actual:,.6f}" if precio_actual<1 else
+                  f"${precio_actual:,.4f}" if precio_actual<10 else
+                  f"${precio_actual:,.2f}")
+
+    # Distancias a niveles
+    dist_sl    = (precio_actual - pos["trail_sl"]) / precio_actual * 100
+    dist_tp1   = (pos["tp1"] - precio_actual) / precio_actual * 100
+    dist_tp2   = (pos["tp2"] - precio_actual) / precio_actual * 100
+    dist_tp3   = (pos["tp3"] - precio_actual) / precio_actual * 100
+
+    # TP alcanzados
+    tp1_ok = precio_actual >= pos["tp1"]
+    tp2_ok = precio_actual >= pos["tp2"]
+    tp3_ok = precio_actual >= pos["tp3"]
+
+    # ── INDICADORES ACTUALES ────────────────────────────────
+    ind_live = calcular_fuerza_actual(df_ohlc_seg, precio_actual)
+    fuerza   = ind_live["fuerza"]    if ind_live else 50
+    urgencia = ind_live["urgencia_salida"] if ind_live else 0
+
+    # ════════════════════════════════════════════════════════
+    #  ALERTA DE SALIDA — si hay urgencia, mostrar arriba
+    # ════════════════════════════════════════════════════════
+    if urgencia == 3:
+        for sig in (ind_live["señales_salida"] if ind_live else []):
+            st.error(f"🚨 **SALIR AHORA** — {sig}")
+        st.markdown("""
+        <div style="background:#3a0000;border:2px solid #ff0000;border-radius:10px;
+                    padding:14px 20px;text-align:center;
+                    font-family:'Orbitron',monospace;margin-bottom:12px;
+                    animation: pulse 1s infinite">
+            <div style="color:#ff0000;font-size:1.2rem;font-weight:700">
+                🚨 SALIR AHORA — FUERZA ALCISTA AGOTADA
+            </div>
+            <div style="color:#ff6666;font-size:0.8rem;margin-top:4px">
+                Múltiples señales de techo detectadas. Toma tus ganancias.
+            </div>
+        </div>""", unsafe_allow_html=True)
+    elif urgencia == 2:
+        st.warning("⚠️ **PREPARARSE PARA SALIR** — señales de debilitamiento detectadas")
+    elif tp1_ok and not tp2_ok:
+        st.success("🎯 **TP1 ALCANZADO** — Considera mover SL a breakeven y esperar TP2")
+    elif tp2_ok and not tp3_ok:
+        st.success("🎯🎯 **TP2 ALCANZADO** — Excelente. Puedes cerrar la mitad y dejar correr al TP3")
+    elif tp3_ok:
+        st.balloons()
+        st.success("🏆 **TP3 ALCANZADO — RENDIMIENTO MÁXIMO** — Considera cerrar posición completa")
+
+    # ════════════════════════════════════════════════════════
+    #  FILA 1: PRECIO + PnL + FUERZA
+    # ════════════════════════════════════════════════════════
+    col_p1, col_p2, col_p3 = st.columns([1,1,2])
+
+    with col_p1:
+        st.markdown(f"""
+        <div style="background:#08090f;border:1px solid #1a2a4a;border-radius:10px;
+                    padding:14px;font-family:'Share Tech Mono',monospace;text-align:center">
+            <div style="color:#2a4060;font-size:0.68rem;text-transform:uppercase">
+                Precio Actual</div>
+            <div style="color:#c0d8ff;font-size:1.6rem;font-weight:700;margin:4px 0">
+                {pfmt_now}</div>
+            <div style="color:{'#00ff88' if chg1h>=0 else '#ff3355'};font-size:0.82rem">
+                {chg1h:+.2f}% 1H</div>
+            <div style="color:{'#00ff88' if chg24h>=0 else '#ff3355'};font-size:0.75rem">
+                {chg24h:+.2f}% 24H</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col_p2:
+        st.markdown(f"""
+        <div style="background:#08090f;border:1px solid {'#00ff88' if pnl_pct>=0 else '#ff3355'};
+                    border-radius:10px;padding:14px;
+                    font-family:'Share Tech Mono',monospace;text-align:center">
+            <div style="color:#2a4060;font-size:0.68rem;text-transform:uppercase">
+                PnL desde entrada</div>
+            <div style="color:{pnl_col};font-size:1.8rem;font-weight:700;margin:4px 0">
+                {pnl_pct:+.2f}%</div>
+            <div style="color:#4a6080;font-size:0.72rem">
+                Entrada: {fp(entry)}</div>
+            <div style="color:#4a6080;font-size:0.72rem">
+                Máx: {fp(pos.get('max_precio',entry))}</div>
+        </div>""", unsafe_allow_html=True)
+
+    with col_p3:
+        # Barra de fuerza alcista — el indicador principal
+        fc = "#00ff88" if fuerza>=60 else("#ffaa00" if fuerza>=35 else "#ff3355")
+        estado_fuerza = ("🔥 FUERTE" if fuerza>=70 else
+                        "⚡ ACTIVA" if fuerza>=50 else
+                        "⚠️ DEBILITANDO" if fuerza>=30 else
+                        "🔴 AGOTADA")
+        st.markdown(f"""
+        <div style="background:#08090f;border:1px solid {fc};border-radius:10px;
+                    padding:14px;font-family:'Share Tech Mono',monospace">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+                <span style="color:#2a4060;font-size:0.68rem;text-transform:uppercase">
+                    FUERZA ALCISTA</span>
+                <span style="color:{fc};font-size:0.82rem;font-weight:700">
+                    {estado_fuerza}</span>
+            </div>
+            <div style="background:#0d1428;border-radius:6px;height:22px;
+                        overflow:hidden;position:relative;margin-bottom:6px">
+                <div style="width:{fuerza}%;height:100%;background:{fc};
+                            border-radius:6px;transition:width 1s"></div>
+                <span style="position:absolute;right:8px;top:2px;
+                             color:white;font-size:0.82rem;font-weight:700">
+                    {fuerza:.0f}%</span>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
+                        gap:4px;font-size:0.7rem;color:#4a6080">
+                <span>RSI: <b style="color:#ff8844">{ind_live['rsi'] if ind_live else '—'}</b></span>
+                <span>ADX: <b style="color:#44aaff">{ind_live['adx'] if ind_live else '—'}</b></span>
+                <span>BB: <b style="color:#ffaa00">{ind_live['bb_p'] if ind_live else '—'}</b></span>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown("&nbsp;")
+
+    # ════════════════════════════════════════════════════════
+    #  FILA 2: NIVELES + PENDIENTES EMA
+    # ════════════════════════════════════════════════════════
+    col_niv, col_ema = st.columns([1,1])
+
+    with col_niv:
+        # Niveles con semáforo visual
+        def nivel_row(label, precio_niv, dist, alcanzado, col_n):
+            icono = "✅" if alcanzado else "⏳"
+            d_str = f"({dist:+.2f}%)" if not alcanzado else "ALCANZADO"
+            return f"""<div style="display:flex;justify-content:space-between;
+                        padding:5px 0;border-bottom:1px solid #0d1a2e;
+                        font-size:0.78rem;font-family:'Share Tech Mono',monospace">
+                <span style="color:#4a6060">{icono} {label}</span>
+                <span style="color:{col_n};font-weight:700">{fp(precio_niv)}</span>
+                <span style="color:{'#00ff88' if alcanzado else '#4a6060'};
+                             font-size:0.7rem">{d_str}</span>
+            </div>"""
+
+        trail_sl = pos.get("trail_sl", pos["sl"])
+        sl_dist  = (precio_actual - trail_sl)/precio_actual*100
+
+        st.markdown(f"""
+        <div style="background:#08090f;border:1px solid #1a2a4a;border-radius:10px;
+                    padding:12px 14px;font-family:'Share Tech Mono',monospace">
+            <div style="color:#4488ff;font-size:0.75rem;font-weight:700;
+                        margin-bottom:8px;text-transform:uppercase">
+                Niveles de Gestión</div>
+            {nivel_row("SL Trailing",trail_sl,-sl_dist,False,"#ff3355")}
+            {nivel_row("TP1 (50% salida)",pos["tp1"],dist_tp1,tp1_ok,"#ffaa00")}
+            {nivel_row("TP2 (75% salida)",pos["tp2"],dist_tp2,tp2_ok,"#ffdd44")}
+            {nivel_row("TP3 (100% salida)",pos["tp3"],dist_tp3,tp3_ok,"#ffffff")}
+            <div style="margin-top:8px;font-size:0.7rem;color:#2a4060">
+                🛡 Trail SL sube automáticamente con el precio<br>
+                📏 ATR actual: {ind_live['atr_actual']*100/precio_actual:.2f}% del precio
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+    with col_ema:
+        # Pendientes EMA con indicador visual
+        def pend_bar(label, valor, col_bar):
+            w = min(100, abs(valor)*200)
+            arrow = "↑" if valor>0.02 else ("↓" if valor<-0.02 else "→")
+            color = "#00ff88" if valor>0.02 else("#ff3355" if valor<-0.02 else "#ffaa00")
+            return f"""<div style="margin:6px 0;font-family:'Share Tech Mono',monospace">
+                <div style="display:flex;justify-content:space-between;font-size:0.72rem">
+                    <span style="color:#4a6060">{label}</span>
+                    <span style="color:{color};font-weight:700">{arrow} {valor:+.3f}%</span>
+                </div>
+                <div style="background:#0d1428;border-radius:3px;height:8px;margin:2px 0;overflow:hidden">
+                    <div style="width:{w}%;height:100%;background:{color};border-radius:3px"></div>
+                </div>
+            </div>"""
+
+        p9_v  = ind_live["p9"]  if ind_live else 0
+        p21_v = ind_live["p21"] if ind_live else 0
+        dip_v2= ind_live["dip"] if ind_live else 0
+        dim_v2= ind_live["dim"] if ind_live else 0
+        vel_v2= ind_live["vel"] if ind_live else 0
+
+        # Kalman barra
+        vel_pct_display = min(100, abs(vel_v2) * 50000)
+        vel_col = "#00ff88" if vel_v2>0 else "#ff3355"
+
+        st.markdown(f"""
+        <div style="background:#08090f;border:1px solid #1a2a4a;border-radius:10px;
+                    padding:12px 14px">
+            <div style="color:#4488ff;font-size:0.75rem;font-weight:700;
+                        margin-bottom:8px;text-transform:uppercase">
+                Señales de Fuerza</div>
+            {pend_bar("Pendiente EMA9",  p9_v,  "#00ff88")}
+            {pend_bar("Pendiente EMA21", p21_v, "#ff8844")}
+            <div style="margin:6px 0">
+                <div style="display:flex;justify-content:space-between;font-size:0.72rem">
+                    <span style="color:#4a6060">Velocidad Kalman</span>
+                    <span style="color:{vel_col};font-weight:700">
+                        {'↑ Acelerando' if ind_live and ind_live['acel'] else '↓ Desacelerando'}</span>
+                </div>
+                <div style="background:#0d1428;border-radius:3px;height:8px;margin:2px 0;overflow:hidden">
+                    <div style="width:{vel_pct_display:.0f}%;height:100%;
+                                background:{vel_col};border-radius:3px"></div>
+                </div>
+            </div>
+            <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:0.72rem">
+                <div style="color:#4a6060">+DI: <b style="color:#00ff88">{dip_v2:.1f}</b></div>
+                <div style="color:#4a6060">-DI: <b style="color:#ff3355">{dim_v2:.1f}</b></div>
+                <div style="color:#4a6060">MACD hist:
+                    <b style="color:{'#00ff88' if ind_live and ind_live['mh']>0 else '#ff3355'}">
+                        {'↑' if ind_live and ind_live['mh']>ind_live['mh_p'] else '↓'}
+                        {ind_live['mh']:.6f if ind_live else '—'}</b></div>
+                <div style="color:#4a6060">EMA9 vs 21:
+                    <b style="color:{'#00ff88' if ind_live and ind_live['e9']>ind_live['e21'] else '#ff3355'}">
+                        {'↑ ALCISTA' if ind_live and ind_live['e9']>ind_live['e21'] else '↓ BAJISTA'}</b></div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════
+    #  MINI-GRÁFICO DE PRECIO DESDE ENTRADA
+    # ════════════════════════════════════════════════════════
+    if len(hist) >= 2:
+        st.markdown("&nbsp;")
+        fig_seg = plt.figure(figsize=(14, 3), facecolor=BG)
+        ax_seg  = fig_seg.add_subplot(1,1,1); estilizar_ax(ax_seg)
+
+        x_seg = range(len(hist))
+        cols_seg = ["#00ff88" if p>=entry else "#ff3355" for p in hist]
+
+        ax_seg.fill_between(x_seg, entry, hist,
+                           where=[p>=entry for p in hist],
+                           alpha=0.2, color="#00ff88")
+        ax_seg.fill_between(x_seg, entry, hist,
+                           where=[p<entry for p in hist],
+                           alpha=0.2, color="#ff3355")
+        ax_seg.plot(x_seg, hist, color="#4488ff", lw=1.5, zorder=3)
+        ax_seg.scatter([len(hist)-1],[hist[-1]],
+                      color="#00ff88" if hist[-1]>=entry else "#ff3355",
+                      s=60, zorder=5)
+
+        # Líneas de niveles
+        ax_seg.axhline(entry,              color="#ffffff", lw=1,   ls="--", alpha=0.7, label=f"Entry {fp(entry)}")
+        ax_seg.axhline(pos["trail_sl"],    color="#ff3355", lw=1,   ls="--", alpha=0.8, label=f"SL {fp(pos['trail_sl'])}")
+        ax_seg.axhline(pos["tp1"],         color="#ffaa00", lw=0.8, ls=":",  alpha=0.7, label=f"TP1 {fp(pos['tp1'])}")
+        ax_seg.axhline(pos["tp2"],         color="#ffdd44", lw=0.8, ls=":",  alpha=0.6, label=f"TP2 {fp(pos['tp2'])}")
+        ax_seg.axhline(pos["tp3"],         color="#ffffff", lw=0.7, ls=":",  alpha=0.5, label=f"TP3 {fp(pos['tp3'])}")
+
+        ax_seg.legend(fontsize=6, framealpha=0.3, loc="upper left", ncol=5)
+        ax_seg.set_title(f"Precio {pos['sym']} desde entrada — {len(hist)} puntos capturados",
+                        color="#4488ff", fontsize=9)
+        ax_seg.set_xlim(0, max(1,len(hist)-1))
+        ax_seg.set_xticks([])
+        plt.tight_layout(); render_fig(fig_seg)
+
+    # ════════════════════════════════════════════════════════
+    #  SEÑALES DE SALIDA ACTIVAS
+    # ════════════════════════════════════════════════════════
+    if ind_live and ind_live["señales_salida"]:
+        st.markdown("### ⚠️ Señales detectadas")
+        for sig in ind_live["señales_salida"]:
+            if "🚨" in sig:
+                st.error(sig)
+            else:
+                st.warning(sig)
+    elif ind_live:
+        st.success("✅ Sin señales de salida — la fuerza alcista se mantiene")
+
+    # ── Auto-refresh ──────────────────────────────────────
+    st.markdown("---")
+    ref1, ref2, ref3 = st.columns([2,1,1])
+    ref1.caption(f"⏱ Actualización automática cada 60 seg · "
+                f"Puntos capturados: {len(hist)} · "
+                f"Máximo precio visto: {fp(pos.get('max_precio',entry))}")
+    if ref2.button("🔄 Forzar update", key="force_refresh_seg"):
+        get_precio_live.clear()
+        get_ohlc_seguimiento.clear()
+        st.rerun()
+    if ref3.button("❌ Cancelar seguimiento", key="cancel_seg"):
+        st.session_state.ver_seguimiento  = False
+        st.session_state.posicion_activa  = None
+        st.session_state.historial_precios= []
+        st.rerun()
+
+    # Auto-refresh cada 60 segundos
+    time.sleep(60)
+    get_precio_live.clear()
+    st.rerun()
