@@ -3009,7 +3009,9 @@ if run_apex:
                             # Botón agregar al Live
                             cid_btn = next((cid for cid,sym2 in APEX_PARES if sym2==r["sym"]),None)
                             if cid_btn:
-                                if st.button(f"📡 Monitorear {r['sym']}", key=f"apex_live_{r['sym']}"):
+                                import uuid as _uuid
+                                _btn_key = f"apex_live_{r['sym']}_{str(_uuid.uuid4())[:8]}"
+                                if st.button(f"📡 Monitorear {r['sym']}", key=_btn_key):
                                     wl = st.session_state.live_watchlist
                                     if (cid_btn,r["sym"]) not in wl:
                                         wl.append((cid_btn,r["sym"]))
