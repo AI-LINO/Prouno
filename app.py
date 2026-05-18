@@ -3337,516 +3337,547 @@ if run_apex:
 
 
 # ==============================================================
-#  SISTEMA DE SEGUIMIENTO PERSISTENTE  Supabase + Live Panel
-#    - Persiste entre sesiones (Supabase)
-#    - Integrado en el panel Live sin recargas
-#    - Solo la cripto seleccionada
-#    - Alertas: FUERTE  PERDIENDO  BAJISTA
-# ==============================================================
 
-#  SQL para crear tabla en Supabase 
-# CREATE TABLE IF NOT EXISTS ailino_posicion_activa (
-#   id SERIAL PRIMARY KEY,
-#   sym TEXT, cid TEXT, entry NUMERIC, sl NUMERIC,
-#   tp1 NUMERIC, tp2 NUMERIC, tp3 NUMERIC,
-#   trail NUMERIC, trail_sl NUMERIC, max_precio NUMERIC,
-#   atr_pct NUMERIC, score INTEGER, tiempo TEXT,
-#   activa BOOLEAN DEFAULT TRUE,
-#   estado TEXT DEFAULT 'SEGUIMIENTO',
-#   created_at TIMESTAMPTZ DEFAULT NOW()
-# );
 
+# ============================================================
+# PANEL DE SEGUIMIENTO FIJO
+# Siempre visible en la parte superior de la app.
+# No depende del scanner. No recarga la pagina.
+# Checkbox para auto-update cada 60 segundos.
+# ============================================================
+
+# -- Supabase helpers para posicion activa ------------------
+
+def supa_guardar_posicion(pos):
+    """Guarda posicion en Supabase. Fallback a session_state."""
+    if SUPA_OK:
+        try:
+            supa.table("ailino_posicion_activa") \
+                .update({"activa": False}) \
+                .eq("sym", pos["sym"]).eq("activa", True).execute()
+            supa.table("ailino_posicion_activa").insert({
+                "sym":        pos["sym"],
+                "cid":        pos["cid"],
+                "entry":      float(pos["entry"]),
+                "sl":         float(pos["sl"]),
+                "tp1":        float(pos["tp1"]),
+                "tp2":        float(pos["tp2"]),
+                "tp3":        float(pos["tp3"]),
+                "trail":      float(pos["trail"]),
+                "trail_sl":   float(pos["trail_sl"]),
+                "max_precio": float(pos["entry"]),
+                "atr_pct":    float(pos.get("atr_pct", 2)),
+                "score":      int(pos.get("score", 0)),
+                "tiempo":     pos.get("tiempo", datetime.utcnow().isoformat()),
+                "activa":     True,
+                "estado":     "SEGUIMIENTO",
+            }).execute()
+        except Exception as e:
+            st.session_state["_pos"] = pos
+    else:
+        st.session_state["_pos"] = pos
+
+def supa_cargar_posicion():
+    """Carga posicion activa."""
+    if SUPA_OK:
+        try:
+            res = supa.table("ailino_posicion_activa") \
+                .select("*").eq("activa", True) \
+                .order("created_at", desc=True).limit(1).execute()
+            if res.data:
+                return res.data[0]
+        except:
+            pass
+    return st.session_state.get("_pos")
+
+def supa_cerrar_pos(sym, pnl):
+    if SUPA_OK:
+        try:
+            supa.table("ailino_posicion_activa") \
+                .update({"activa": False,
+                         "estado": f"CERRADA {pnl:+.2f}%"}) \
+                .eq("sym", sym).eq("activa", True).execute()
+        except:
+            pass
+    st.session_state.pop("_pos", None)
+
+def supa_update_trail(sym, trail_sl, max_p, estado):
+    if SUPA_OK:
+        try:
+            supa.table("ailino_posicion_activa") \
+                .update({"trail_sl": float(trail_sl),
+                         "max_precio": float(max_p),
+                         "estado": estado}) \
+                .eq("sym", sym).eq("activa", True).execute()
+        except:
+            pass
+    pos = st.session_state.get("_pos")
+    if pos:
+        pos["trail_sl"]   = trail_sl
+        pos["max_precio"] = max_p
+        st.session_state["_pos"] = pos
+
+# Tambien guardar posicion desde APEX
 def supa_guardar_posicion_activa(pos):
-    """Guarda/actualiza posición en Supabase."""
-    if not SUPA_OK:
-        # Sin Supabase: usar session_state como fallback
-        st.session_state["pos_activa_local"] = pos
-        return True
-    try:
-        # Desactivar posiciones anteriores del mismo smbolo
-        supa.table("ailino_posicion_activa")\
-            .update({"activa": False})\
-            .eq("sym", pos["sym"]).eq("activa", True).execute()
-        # Insertar nueva
-        supa.table("ailino_posicion_activa").insert({
-            "sym":        pos["sym"],
-            "cid":        pos["cid"],
-            "entry":      float(pos["entry"]),
-            "sl":         float(pos["sl"]),
-            "tp1":        float(pos["tp1"]),
-            "tp2":        float(pos["tp2"]),
-            "tp3":        float(pos["tp3"]),
-            "trail":      float(pos["trail"]),
-            "trail_sl":   float(pos["trail_sl"]),
-            "max_precio": float(pos["max_precio"]),
-            "atr_pct":    float(pos["atr_pct"]),
-            "score":      int(pos["score"]),
-            "tiempo":     pos["tiempo"],
-            "activa":     True,
-            "estado":     "SEGUIMIENTO",
-        }).execute()
-        return True
-    except Exception as e:
-        st.session_state["pos_activa_local"] = pos
-        return False
-
-def supa_cargar_posicion_activa():
-    """Carga la posición activa desde Supabase."""
-    if not SUPA_OK:
-        return st.session_state.get("pos_activa_local")
-    try:
-        res = supa.table("ailino_posicion_activa")\
-            .select("*").eq("activa", True)\
-            .order("created_at", desc=True).limit(1).execute()
-        if res.data:
-            return res.data[0]
-    except:
-        pass
-    return st.session_state.get("pos_activa_local")
-
-def supa_cerrar_posicion(sym, pnl_pct):
-    """Marca posición como cerrada."""
-    if not SUPA_OK:
-        st.session_state.pop("pos_activa_local", None)
-        return
-    try:
-        supa.table("ailino_posicion_activa")\
-            .update({"activa": False, "estado": f"CERRADA {pnl_pct:+.2f}%"})\
-            .eq("sym", sym).eq("activa", True).execute()
-    except:
-        pass
-    st.session_state.pop("pos_activa_local", None)
-
-def supa_actualizar_trail_sl(sym, trail_sl, max_precio, estado):
-    """Actualiza el trailing SL en tiempo real."""
-    if not SUPA_OK:
-        pos = st.session_state.get("pos_activa_local")
-        if pos:
-            pos["trail_sl"]   = trail_sl
-            pos["max_precio"] = max_precio
-            pos["estado"]     = estado
-            st.session_state["pos_activa_local"] = pos
-        return
-    try:
-        supa.table("ailino_posicion_activa")\
-            .update({"trail_sl": float(trail_sl),
-                     "max_precio": float(max_precio),
-                     "estado": estado})\
-            .eq("sym", sym).eq("activa", True).execute()
-    except:
-        pass
+    supa_guardar_posicion(pos)
 
 
-# ==============================================================
-#  ATR FILTER  SOLO ALTO IMPACTO
-#  Elimina las "centaveras"  solo criptos con potencial real
-# ==============================================================
+# -- Obtener precio y OHLC en tiempo real -------------------
+
 @st.cache_data(ttl=28)
-def precio_tiempo_real(coin_id):
+def get_precio_rt(coin_id):
     try:
         r = requests.get(f"{CG}/simple/price", params={
             "ids": coin_id, "vs_currencies": "usd",
+            "include_1hr_change": "true",
             "include_24hr_change": "true",
-            "include_1hr_change":  "true",
         }, timeout=8)
         if r.status_code == 200:
             d = r.json().get(coin_id, {})
-            return {"precio": d.get("usd",0) or 0,
-                    "chg1h":  d.get("usd_1h_change",0) or 0,
-                    "chg24h": d.get("usd_24h_change",0) or 0}
-    except: pass
+            return {
+                "precio": float(d.get("usd", 0) or 0),
+                "chg1h":  float(d.get("usd_1h_change",  0) or 0),
+                "chg24h": float(d.get("usd_24h_change", 0) or 0),
+            }
+    except:
+        pass
     return None
 
-@st.cache_data(ttl=50)
-def ohlc_seguimiento(coin_id):
+@st.cache_data(ttl=55)
+def get_ohlc_rt(coin_id):
     try:
         r = requests.get(f"{CG}/coins/{coin_id}/ohlc",
-                        params={"vs_currency":"usd","days":2}, timeout=10)
-        if r.status_code==200 and r.json():
-            df = pd.DataFrame(r.json(), columns=["ts","Open","High","Low","Close"])
-            df["ts"] = pd.to_datetime(df["ts"],unit="ms",utc=True)
-            df.set_index("ts",inplace=True)
+                        params={"vs_currency": "usd", "days": 2},
+                        timeout=10)
+        if r.status_code == 200 and r.json():
+            df = pd.DataFrame(r.json(),
+                              columns=["ts","Open","High","Low","Close"])
+            df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+            df.set_index("ts", inplace=True)
             return df.astype(float)
-    except: pass
+    except:
+        pass
     return None
 
 
-def calcular_estado_posicion(df_ohlc, precio_actual, pos):
+# -- Calcula fuerza + senales de salida ---------------------
+
+def calcular_fuerza_live(df_ohlc, precio_actual, pos):
     """
-    Calcula el estado actual de la posición:
-    FUERTE / PERDIENDO / BAJISTA / SALIR
-    Con todos los indicadores necesarios.
+    Devuelve fuerza 0-100, estado semaforo y senales de salida.
     """
+    entry      = float(pos.get("entry",      precio_actual))
+    trail_orig = float(pos.get("trail",      precio_actual * 0.02))
+    trail_sl   = float(pos.get("trail_sl",   pos.get("sl", entry * 0.97)))
+    max_precio = float(pos.get("max_precio", entry))
+
+    # Actualizar max y trailing SL
+    max_precio = max(max_precio, precio_actual)
+    nuevo_sl   = precio_actual - trail_orig
+    trail_sl   = max(trail_sl, nuevo_sl)
+
     if df_ohlc is None or len(df_ohlc) < 8:
-        return None
-    try:
-        c = df_ohlc["Close"].copy()
-        c.iloc[-1] = precio_actual
-        h = df_ohlc["High"]; l = df_ohlc["Low"]
-        n = len(c)
-
-        # EMAs
-        e9  = c.ewm(span=9,  adjust=False).mean()
-        e21 = c.ewm(span=21, adjust=False).mean()
-
-        # RSI
-        d  = c.diff()
-        g  = d.clip(lower=0).ewm(com=6,adjust=False).mean()
-        ls = (-d.clip(upper=0)).ewm(com=6,adjust=False).mean()
-        rsi= float((100-(100/(1+g/(ls+1e-10)))).iloc[-1])
-        if np.isnan(rsi): rsi=50.0
-
-        # MACD
-        mh_v = float((c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
-                     ).ewm(9,adjust=False).mean().diff().iloc[-1])
-        macd_hist = (c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
-                    ) - (c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
-                    ).ewm(9,adjust=False).mean()
-        mh  = float(macd_hist.iloc[-1])  if not np.isnan(macd_hist.iloc[-1])  else 0
-        mhp = float(macd_hist.iloc[-2])  if not np.isnan(macd_hist.iloc[-2]) else mh
-
-        # Bollinger
-        bb_m= c.rolling(min(10,n)).mean()
-        bb_s= c.rolling(min(10,n)).std()
-        bb_p= float(((c-bb_m-2*bb_s)/(4*bb_s+1e-9)+1).iloc[-1])
-        if np.isnan(bb_p): bb_p=0.5
-
-        # ATR y ADX
-        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-        atr = float(tr.ewm(7,adjust=False).mean().iloc[-1])
-        dm_p= h.diff().clip(lower=0); dm_n=(-l.diff()).clip(lower=0)
-        dm_p= dm_p.where(dm_p>dm_n,0); dm_n=dm_n.where(dm_n>dm_p,0)
-        a7  = tr.ewm(7,adjust=False).mean()
-        dip = float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
-        dim = float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
-        dx  = abs(dip-dim)/(dip+dim+1e-10)*100
-        adx = float(pd.Series([dx]*n).ewm(7,adjust=False).mean().iloc[-1])
-        adx_s = (abs(dip-dim)/(dip+dim+1e-10)*100)
-        adx_full = adx_s if not isinstance(adx_s, float) else adx
-        try:
-            adx_p = float(pd.Series(
-                [(abs(float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) -
-                      float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i])) /
-                 (float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) +
-                  float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) + 1e-10)*100)
-                 for i in range(n)]
-            ).ewm(7,adjust=False).mean().iloc[-2])
-        except: adx_p = adx
-
-        # Kalman velocidad
-        pk  = c.ewm(4,adjust=False).mean()
-        vel = float(pk.diff().iloc[-1])
-        velp= float(pk.diff().iloc[-2]) if n>2 else vel
-
-        # Pendientes EMA
-        p9  = (e9.iloc[-1]-e9.iloc[-4])/(e9.iloc[-4]+1e-10)*100  if n>4 else 0
-        p21 = (e21.iloc[-1]-e21.iloc[-4])/(e21.iloc[-4]+1e-10)*100 if n>4 else 0
-
-        e9v = float(e9.iloc[-1]); e21v=float(e21.iloc[-1])
-
-        #  FUERZA ALCISTA 0-100 
-        fuerza = 0
-        if p9>0:    fuerza += min(25, p9*60)
-        if p21>0:   fuerza += min(20, p21*90)
-        if adx>25:  fuerza += 25
-        elif adx>15:fuerza += 14
-        if dip>dim: fuerza += min(15,(dip-dim)*0.5)
-        if vel>0 and vel>velp: fuerza += 10
-        elif vel>0:            fuerza += 5
-        if rsi<65:  fuerza += 5
-        elif rsi>74:fuerza -= 15
-        if bb_p>0.85: fuerza -= 12
-        if mh<0 and mhp>=0: fuerza -= 20
-        fuerza = max(0, min(100, fuerza))
-
-        #  ESTADO PRINCIPAL 
-        señales = []
-        urgencia = 0
-
-        # Seales crticas de salida
-        if rsi > 75 and bb_p > 0.88:
-            señales.append("🚨 RSI sobrecomprado + precio en techo BB")
-            urgencia = 3
-        if e9v < e21v:
-            señales.append("🚨 EMA9 cruzó EMA21 hacia abajo")
-            urgencia = 3
-        if mh < 0 and mhp >= 0:
-            señales.append("🚨 MACD cruce bajista")
-            urgencia = 3
-
-        # Seales de alerta
-        if rsi > 70 and bb_p > 0.75:
-            señales.append("⚠️ RSI alto + BB extendido")
-            urgencia = max(urgencia, 2)
-        if adx < adx_p and adx < 20:
-            señales.append("⚠️ ADX cayendo — fuerza debilitándose")
-            urgencia = max(urgencia, 1)
-        if vel < 0 and vel < velp:
-            señales.append("⚠️ Kalman desacelerando")
-            urgencia = max(urgencia, 1)
-        if fuerza < 25:
-            señales.append("⚠️ Fuerza alcista por debajo del 25%")
-            urgencia = max(urgencia, 2)
-
-        # Estado semforo
-        if urgencia == 3 or fuerza < 20:
-            estado = "BAJISTA"; estado_col = "#ff3355"; estado_ico = "🔴"
-        elif urgencia == 2 or fuerza < 40:
-            estado = "PERDIENDO"; estado_col = "#ffaa00"; estado_ico = "⚠️"
-        else:
-            estado = "FUERTE"; estado_col = "#00ff88"; estado_ico = "✅"
-
-        # Trailing stop actualizado
-        entry     = float(pos.get("entry", precio_actual))
-        trail     = float(pos.get("trail", atr*1.5))
-        trail_sl_viejo = float(pos.get("trail_sl", pos.get("sl", entry*0.97)))
-        max_precio= max(float(pos.get("max_precio", entry)), precio_actual)
-        nuevo_trail_sl = precio_actual - trail
-        trail_sl  = max(trail_sl_viejo, nuevo_trail_sl)
-
-        # SL tocado
-        if precio_actual <= trail_sl:
-            señales.insert(0, "🚨 STOP LOSS TOCADO — SALIR INMEDIATAMENTE")
-            urgencia  = 3
-            estado    = "BAJISTA"
-            estado_col= "#ff0000"
-
+        # Sin OHLC: solo precio vs niveles
+        pnl = (precio_actual - entry) / (entry + 1e-10) * 100
+        sl_tocado = precio_actual <= trail_sl
         return {
-            "rsi": round(rsi,1), "mh": round(mh,8),
-            "mhp": round(mhp,8), "bb_p": round(bb_p,3),
-            "adx": round(adx,1), "adx_p": round(adx_p,1),
-            "dip": round(dip,1), "dim": round(dim,1),
-            "vel": round(vel,6), "velp": round(velp,6),
-            "p9": round(p9,3), "p21": round(p21,3),
-            "e9": round(e9v,6), "e21": round(e21v,6),
-            "fuerza": round(fuerza,1),
-            "señales": señales, "urgencia": urgencia,
-            "estado": estado, "estado_col": estado_col, "estado_ico": estado_ico,
+            "fuerza": 50, "estado": "CALCULANDO",
+            "estado_col": "#4488ff", "estado_ico": "...",
+            "senales": ["Sin datos OHLC — usando solo precio"] if sl_tocado else [],
+            "urgencia": 3 if sl_tocado else 0,
+            "rsi": 50, "adx": 0, "bb_p": 0.5,
+            "p9": 0, "p21": 0, "vel": 0, "acel": False,
+            "dip": 0, "dim": 0,
             "trail_sl": trail_sl, "max_precio": max_precio,
-            "atr_actual": round(atr,8),
+            "sl_tocado": sl_tocado,
         }
-    except Exception as e:
-        return None
+
+    c  = df_ohlc["Close"].copy()
+    c.iloc[-1] = precio_actual
+    h  = df_ohlc["High"]; l = df_ohlc["Low"]
+    n  = len(c)
+
+    # EMAs
+    e9  = c.ewm(span=9,  adjust=False).mean()
+    e21 = c.ewm(span=21, adjust=False).mean()
+
+    # RSI
+    d   = c.diff()
+    g   = d.clip(lower=0).ewm(com=6, adjust=False).mean()
+    ls  = (-d.clip(upper=0)).ewm(com=6, adjust=False).mean()
+    rsi = float((100 - (100 / (1 + g / (ls + 1e-10)))).iloc[-1])
+    rsi = 50.0 if np.isnan(rsi) else rsi
+
+    # MACD histograma
+    ema12 = c.ewm(span=12, adjust=False).mean()
+    ema26 = c.ewm(span=26, adjust=False).mean()
+    macd  = ema12 - ema26
+    msig  = macd.ewm(span=9, adjust=False).mean()
+    mhist = macd - msig
+    mh    = float(mhist.iloc[-1])  if not np.isnan(mhist.iloc[-1])  else 0
+    mhp   = float(mhist.iloc[-2])  if n > 2 and not np.isnan(mhist.iloc[-2]) else mh
+
+    # Bollinger %B
+    bm  = c.rolling(min(10, n)).mean()
+    bs  = c.rolling(min(10, n)).std()
+    bp  = ((c - (bm - 2*bs)) / (4*bs + 1e-9)).iloc[-1]
+    bb_p= float(bp) if not np.isnan(bp) else 0.5
+
+    # ATR y ADX simplificado
+    tr   = pd.concat([h-l,
+                      (h-c.shift()).abs(),
+                      (l-c.shift()).abs()], axis=1).max(axis=1)
+    atr  = float(tr.ewm(span=7, adjust=False).mean().iloc[-1])
+    dmp  = h.diff().clip(lower=0); dmn = (-l.diff()).clip(lower=0)
+    dmp  = dmp.where(dmp > dmn, 0); dmn = dmn.where(dmn > dmp, 0)
+    a7   = tr.ewm(span=7, adjust=False).mean()
+    dip  = float((dmp.ewm(span=7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
+    dim  = float((dmn.ewm(span=7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
+    dx   = abs(dip-dim)/(dip+dim+1e-10)*100
+    adx  = float(dx)
+    try:
+        adx_p = float(((abs(dip-dim)/(dip+dim+1e-10)*100).ewm(span=3,adjust=False).mean()).iloc[-2])
+    except:
+        adx_p = adx
+
+    # Kalman velocidad
+    pk   = c.ewm(span=4, adjust=False).mean()
+    vel  = float(pk.diff().iloc[-1])
+    velp = float(pk.diff().iloc[-2]) if n > 2 else vel
+    acel = vel > velp
+
+    # Pendientes EMA
+    p9  = float((e9.iloc[-1]  - e9.iloc[-4])  / (e9.iloc[-4]+1e-10)  * 100) if n > 4 else 0
+    p21 = float((e21.iloc[-1] - e21.iloc[-4]) / (e21.iloc[-4]+1e-10) * 100) if n > 4 else 0
+    e9v = float(e9.iloc[-1]); e21v = float(e21.iloc[-1])
+
+    # Fuerza alcista 0-100
+    fuerza = 0
+    if p9  > 0: fuerza += min(25, p9  * 60)
+    if p21 > 0: fuerza += min(20, p21 * 90)
+    if adx > 25: fuerza += 25
+    elif adx > 15: fuerza += 14
+    if dip > dim: fuerza += min(15, (dip-dim) * 0.5)
+    if vel > 0 and acel: fuerza += 10
+    elif vel > 0:         fuerza += 5
+    if rsi < 65: fuerza += 5
+    elif rsi > 74: fuerza -= 15
+    if bb_p > 0.85: fuerza -= 12
+    if mh < 0 and mhp >= 0: fuerza -= 20
+    fuerza = max(0, min(100, fuerza))
+
+    # Senales de salida
+    senales  = []
+    urgencia = 0
+
+    sl_tocado = precio_actual <= trail_sl
+
+    if sl_tocado:
+        senales.insert(0, "STOP LOSS TOCADO")
+        urgencia = 3
+    if rsi > 75 and bb_p > 0.88:
+        senales.append("RSI sobrecomprado + BB techo")
+        urgencia = max(urgencia, 3)
+    if e9v < e21v:
+        senales.append("EMA9 cruzo EMA21 abajo")
+        urgencia = max(urgencia, 3)
+    if mh < 0 and mhp >= 0:
+        senales.append("MACD cruce bajista")
+        urgencia = max(urgencia, 3)
+    if rsi > 70 and bb_p > 0.75:
+        senales.append("RSI alto + BB extendido")
+        urgencia = max(urgencia, 2)
+    if adx < adx_p and adx < 20:
+        senales.append("ADX cayendo")
+        urgencia = max(urgencia, 1)
+    if fuerza < 25:
+        senales.append("Fuerza alcista agotada")
+        urgencia = max(urgencia, 2)
+
+    # Estado semaforo
+    if urgencia >= 3 or fuerza < 20:
+        estado = "SALIR AHORA";  ecol = "#ff0000"; eico = "SALIR"
+    elif urgencia == 2 or fuerza < 40:
+        estado = "PERDIENDO";    ecol = "#ffaa00"; eico = "ALERTA"
+    else:
+        estado = "FUERTE";       ecol = "#00ff88"; eico = "OK"
+
+    return {
+        "fuerza":    round(fuerza, 1),
+        "estado":    estado, "estado_col": ecol, "estado_ico": eico,
+        "senales":   senales, "urgencia": urgencia,
+        "rsi":       round(rsi, 1), "adx": round(adx, 1),
+        "bb_p":      round(bb_p, 3), "p9": round(p9, 3),
+        "p21":       round(p21, 3), "vel": round(vel, 6),
+        "acel":      acel, "dip": round(dip, 1), "dim": round(dim, 1),
+        "trail_sl":  trail_sl, "max_precio": max_precio,
+        "sl_tocado": sl_tocado, "atr": atr,
+        "e9": e9v, "e21": e21v,
+    }
 
 
-# ==============================================================
-#  UI  PANEL DE SEGUIMIENTO (dentro del Live, sin recargas)
-# ==============================================================
-st.sidebar.divider()
+# ============================================================
+# PANEL FIJO DE SEGUIMIENTO
+# Aparece siempre arriba, antes de cualquier otro modulo.
+# ============================================================
 
-# Cargar posicin activa desde Supabase al inicio
-pos_activa = supa_cargar_posicion_activa()
+# Cargar posicion desde Supabase o session_state
+if "pos_cargada" not in st.session_state:
+    st.session_state.pos_cargada = supa_cargar_posicion()
 
-if pos_activa:
-    sym_pos = pos_activa.get("sym","")
-    st.sidebar.markdown(f"**🎯 EN SEGUIMIENTO: {sym_pos}**")
-    if st.sidebar.button("❌ Cerrar posición", key="sidebar_cerrar"):
-        precio_cierre = precio_tiempo_real(pos_activa.get("cid",""))
-        if precio_cierre:
-            pnl = (precio_cierre["precio"]-float(pos_activa["entry"]))/float(pos_activa["entry"])*100
+pos_activa = st.session_state.pos_cargada
+
+# -- Formulario para agregar posicion manualmente -----------
+with st.expander("➕ Agregar cripto al seguimiento", expanded=False):
+    st.caption("Llena estos datos despues de comprar en Bitso")
+    fa1, fa2 = st.columns(2)
+    with fa1:
+        sym_input = st.text_input("Simbolo (ej: SOL, BTC, ETH):",
+                                  key="sym_manual").upper().strip()
+    with fa2:
+        # Buscar CoinGecko ID automaticamente
+        cid_options = {sym: cid for cid, sym in LIVE_PARES_BASE}
+        cid_input   = cid_options.get(sym_input, "")
+        st.text_input("CoinGecko ID (auto):", value=cid_input,
+                      key="cid_manual", disabled=bool(cid_input))
+
+    fb1, fb2, fb3, fb4 = st.columns(4)
+    precio_entrada = fb1.number_input("Precio entrada:", min_value=0.0,
+                                      format="%.6f", key="entry_manual")
+    sl_manual      = fb2.number_input("Stop Loss:",    min_value=0.0,
+                                      format="%.6f", key="sl_manual")
+    tp1_manual     = fb3.number_input("TP1 objetivo:", min_value=0.0,
+                                      format="%.6f", key="tp1_manual")
+    tp2_manual     = fb4.number_input("TP2 objetivo:", min_value=0.0,
+                                      format="%.6f", key="tp2_manual")
+
+    if st.button("🎯 INICIAR SEGUIMIENTO", key="btn_iniciar_seg",
+                 type="primary"):
+        if sym_input and precio_entrada > 0 and sl_manual > 0:
+            cid_final = cid_input or sym_input.lower()
+            tp3_auto  = precio_entrada + (tp2_manual - precio_entrada) * 2 if tp2_manual > precio_entrada else precio_entrada * 1.15
+            trail_auto= precio_entrada - sl_manual
+            nueva_pos  = {
+                "sym":        sym_input,
+                "cid":        cid_final,
+                "entry":      precio_entrada,
+                "sl":         sl_manual,
+                "tp1":        tp1_manual if tp1_manual > 0 else precio_entrada + (precio_entrada - sl_manual)*2,
+                "tp2":        tp2_manual if tp2_manual > 0 else precio_entrada + (precio_entrada - sl_manual)*4,
+                "tp3":        tp3_auto,
+                "trail":      trail_auto,
+                "trail_sl":   sl_manual,
+                "max_precio": precio_entrada,
+                "atr_pct":    round(trail_auto/precio_entrada*100, 2),
+                "score":      0,
+                "tiempo":     datetime.utcnow().isoformat(),
+                "activa":     True,
+            }
+            supa_guardar_posicion(nueva_pos)
+            st.session_state.pos_cargada = nueva_pos
+            st.success(f"Seguimiento iniciado para {sym_input}")
+            time.sleep(0.5)
+            st.rerun()
         else:
-            pnl = 0
-        supa_cerrar_posicion(sym_pos, pnl)
-        st.rerun()
+            st.error("Completa: simbolo, precio entrada y stop loss")
 
-#  PANEL DE SEGUIMIENTO 
-if pos_activa and pos_activa.get("activa", True):
-    sym  = pos_activa["sym"]
-    cid  = pos_activa["cid"]
-    entry= float(pos_activa["entry"])
+st.divider()
 
-    st.divider()
-    st.markdown(f"## 🎯 SEGUIMIENTO — {sym}/USDT")
+# -- Panel principal de seguimiento -------------------------
+pos_activa = st.session_state.get("pos_cargada")
 
-    #  Obtener datos actuales 
-    pd_rt = precio_tiempo_real(cid)
-    df_seg= ohlc_seguimiento(cid)
+if not pos_activa or not pos_activa.get("activa", True):
+    st.info("Sin posicion activa. Usa APEX para generar una senal, "
+            "o agrega manualmente arriba.")
+else:
+    sym   = pos_activa.get("sym", "")
+    cid   = pos_activa.get("cid", "")
+    entry = float(pos_activa.get("entry", 0))
 
-    precio_actual = pd_rt["precio"] if pd_rt else entry
-    chg1h  = pd_rt["chg1h"]  if pd_rt else 0
-    chg24h = pd_rt["chg24h"] if pd_rt else 0
+    # Header del panel
+    st.markdown(f"""
+    <div style="background:#001a0a;border:2px solid #00ff88;
+                border-radius:10px;padding:10px 16px;margin-bottom:8px">
+        <span style="font-family:'Orbitron',monospace;color:#00ff88;
+                     font-size:1.1rem;font-weight:700">
+            SEGUIMIENTO ACTIVO
+        </span>
+        <span style="color:#4488ff;font-size:1.1rem;font-weight:700;
+                     margin-left:12px">{sym}/USDT</span>
+        <span style="color:#2a4060;font-size:0.72rem;margin-left:12px">
+            Entrada: {fp(entry)} | {pos_activa.get('tiempo','')[:16].replace('T',' ')} UTC
+        </span>
+    </div>""", unsafe_allow_html=True)
+
+    # Checkbox auto-update + botones de control
+    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([2,1,1,1])
+    with ctrl1:
+        auto_update = st.checkbox(
+            "Auto-actualizar cada 60 seg",
+            value=st.session_state.get("auto_update_seg", False),
+            key="auto_update_seg"
+        )
+    with ctrl2:
+        if st.button("Actualizar ahora", key="update_now"):
+            get_precio_rt.clear()
+            get_ohlc_rt.clear()
+            st.rerun()
+    with ctrl3:
+        if st.button("Cerrar posicion", key="cerrar_seg"):
+            pd_cierre = get_precio_rt(cid)
+            p_cierre  = pd_cierre["precio"] if pd_cierre else entry
+            pnl_c     = (p_cierre - entry) / (entry + 1e-10) * 100
+            supa_cerrar_pos(sym, pnl_c)
+            st.session_state.pos_cargada = None
+            st.success(f"Posicion cerrada. PnL: {pnl_c:+.2f}%")
+            time.sleep(1); st.rerun()
+    with ctrl4:
+        st.caption(f"Supabase: {'OK' if SUPA_OK else 'local'}")
+
+    # Obtener datos
+    pd_rt  = get_precio_rt(cid)
+    df_seg = get_ohlc_rt(cid)
+
+    if pd_rt is None:
+        st.warning("Obteniendo datos de CoinGecko... (max 30 seg)")
+        precio_actual = entry
+        chg1h = chg24h = 0.0
+    else:
+        precio_actual = pd_rt["precio"]
+        chg1h         = pd_rt["chg1h"]
+        chg24h        = pd_rt["chg24h"]
 
     # Calcular estado
-    estado_pos = calcular_estado_posicion(df_seg, precio_actual, pos_activa)
+    est = calcular_fuerza_live(df_seg, precio_actual, pos_activa)
 
-    # Actualizar trail SL en Supabase si cambi
-    if estado_pos:
-        if estado_pos["trail_sl"] > float(pos_activa.get("trail_sl", entry*0.97)):
-            supa_actualizar_trail_sl(
-                sym,
-                estado_pos["trail_sl"],
-                estado_pos["max_precio"],
-                estado_pos["estado"]
-            )
-            pos_activa["trail_sl"]   = estado_pos["trail_sl"]
-            pos_activa["max_precio"] = estado_pos["max_precio"]
+    # Actualizar trail SL si subio
+    if est["trail_sl"] > float(pos_activa.get("trail_sl", pos_activa.get("sl", 0))):
+        supa_update_trail(sym, est["trail_sl"], est["max_precio"], est["estado"])
+        pos_activa["trail_sl"]   = est["trail_sl"]
+        pos_activa["max_precio"] = est["max_precio"]
+        st.session_state.pos_cargada = pos_activa
 
     # PnL
-    pnl_pct  = (precio_actual - entry)/(entry+1e-10)*100
-    pnl_col  = "#00ff88" if pnl_pct >= 0 else "#ff3355"
-    pfmt_now = (f"${precio_actual:,.6f}" if precio_actual<1 else
-                f"${precio_actual:,.4f}" if precio_actual<10 else
-                f"${precio_actual:,.2f}")
+    pnl_pct = (precio_actual - entry) / (entry + 1e-10) * 100
+    pnl_col = "#00ff88" if pnl_pct >= 0 else "#ff3355"
+    pfmt    = (f"${precio_actual:,.6f}" if precio_actual < 1 else
+               f"${precio_actual:,.4f}" if precio_actual < 10 else
+               f"${precio_actual:,.2f}")
 
-    tp1  = float(pos_activa["tp1"])
-    tp2  = float(pos_activa["tp2"])
-    tp3  = float(pos_activa["tp3"])
-    trail_sl = float(pos_activa.get("trail_sl", pos_activa["sl"]))
-    max_p    = float(pos_activa.get("max_precio", entry))
+    tp1 = float(pos_activa.get("tp1", entry * 1.04))
+    tp2 = float(pos_activa.get("tp2", entry * 1.08))
+    tp3 = float(pos_activa.get("tp3", entry * 1.15))
+    tsl = float(pos_activa.get("trail_sl", pos_activa.get("sl", entry * 0.97)))
 
     tp1_ok = precio_actual >= tp1
     tp2_ok = precio_actual >= tp2
     tp3_ok = precio_actual >= tp3
-    sl_ok  = precio_actual <= trail_sl
+    sl_ok  = precio_actual <= tsl
 
-    fuerza   = estado_pos["fuerza"]    if estado_pos else 50
-    urgencia = estado_pos["urgencia"]  if estado_pos else 0
-    est_col  = estado_pos["estado_col"]if estado_pos else "#4488ff"
-    est_ico  = estado_pos["estado_ico"]if estado_pos else "⏳"
-    est_txt  = estado_pos["estado"]    if estado_pos else "CALCULANDO"
+    fuerza   = est["fuerza"]
+    ecol     = est["estado_col"]
+    estado   = est["estado"]
+    urgencia = est["urgencia"]
 
-    #  ALERTA PRINCIPAL 
+    # Alerta principal
     if sl_ok:
-        st.error("🚨 **STOP LOSS TOCADO — SALIR INMEDIATAMENTE**")
+        st.error("STOP LOSS TOCADO - SALIR INMEDIATAMENTE")
     elif tp3_ok:
-        st.success("🏆 **TP3 ALCANZADO — MÁXIMO RENDIMIENTO — Cierra posición completa**")
+        st.success("TP3 ALCANZADO - Cierra posicion completa")
     elif tp2_ok:
-        st.success("🎯🎯 **TP2 ALCANZADO — Cierra 75%, deja 25% al TP3**")
+        st.success("TP2 ALCANZADO - Cierra 75%, deja 25% al TP3")
     elif tp1_ok and urgencia < 2:
-        st.success("🎯 **TP1 ALCANZADO — Mueve SL a breakeven, espera TP2**")
+        st.info("TP1 ALCANZADO - Mueve SL a breakeven")
     elif urgencia == 3:
-        st.error(f"🚨 **SALIR AHORA — {est_txt}**")
+        st.error(f"SALIR AHORA - {estado}")
     elif urgencia == 2:
-        st.warning("⚠️ **PREPARAR SALIDA — fuerza debilitándose**")
+        st.warning("PREPARAR SALIDA - Fuerza debilitandose")
 
-    #  FILA PRINCIPAL 
-    c1,c2,c3,c4 = st.columns(4)
+    # Fila de metricas principales
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Precio", pfmt, f"{chg1h:+.2f}% 1H")
+    m2.metric("PnL", f"{pnl_pct:+.2f}%",
+              f"Max: {fp(est['max_precio'])}")
+    m3.metric("Trail SL", fp(tsl),
+              f"SL orig: {fp(pos_activa.get('sl',0))}")
+    m4.metric("TP1", fp(tp1),
+              "ALCANZADO" if tp1_ok else f"{(tp1-precio_actual)/precio_actual*100:+.1f}%")
+    m5.metric("TP2/TP3", fp(tp2),
+              "ALCANZADO" if tp2_ok else f"{(tp2-precio_actual)/precio_actual*100:+.1f}%")
 
-    c1.metric("Precio", pfmt_now,
-              f"{chg1h:+.2f}% 1H")
-    c2.metric("PnL", f"{pnl_pct:+.2f}%",
-              f"Máx: {fp(max_p)}")
-    c3.metric("Fuerza", f"{fuerza:.0f}%",
-              f"{est_ico} {est_txt}")
-    c4.metric("Trail SL", fp(trail_sl),
-              f"Entry: {fp(entry)}")
-
-    #  BARRA DE FUERZA (el indicador central) 
-    fc = "#00ff88" if fuerza>=60 else("#ffaa00" if fuerza>=35 else "#ff3355")
+    # Barra de fuerza alcista - el centro del panel
+    fc = "#00ff88" if fuerza >= 60 else ("#ffaa00" if fuerza >= 35 else "#ff3355")
     st.markdown(f"""
-    <div style="background:#08090f;border:1px solid {fc};border-radius:10px;
-                padding:12px 16px;margin:8px 0">
-        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-            <span style="font-family:'Orbitron',monospace;color:{fc};font-size:0.88rem">
-                {est_ico} FUERZA ALCISTA — {est_txt}
+    <div style="background:#08090f;border:2px solid {ecol};
+                border-radius:10px;padding:12px 16px;margin:8px 0">
+        <div style="display:flex;justify-content:space-between;
+                    align-items:center;margin-bottom:8px">
+            <span style="font-family:'Orbitron',monospace;color:{ecol};
+                         font-size:1rem;font-weight:700">
+                FUERZA ALCISTA
             </span>
-            <span style="font-family:'Share Tech Mono',monospace;color:{fc};
-                         font-size:1.2rem;font-weight:700">{fuerza:.0f}%</span>
+            <span style="font-family:'Share Tech Mono',monospace;
+                         color:{ecol};font-size:1.5rem;font-weight:700">
+                {fuerza:.0f}%  {estado}
+            </span>
         </div>
-        <div style="background:#0d1428;border-radius:6px;height:20px;overflow:hidden">
-            <div style="width:{fuerza}%;height:100%;background:{fc};border-radius:6px"></div>
+        <div style="background:#0d1428;border-radius:8px;height:24px;overflow:hidden">
+            <div style="width:{fuerza}%;height:100%;background:{fc};
+                        border-radius:8px"></div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(6,1fr);
-                    gap:4px;margin-top:8px;font-size:0.72rem;
-                    font-family:'Share Tech Mono',monospace;color:#4a6080">
-            <span>RSI: <b style="color:#ff8844">{estado_pos['rsi'] if estado_pos else '—'}</b></span>
-            <span>ADX: <b style="color:#44aaff">{estado_pos['adx'] if estado_pos else '—'}</b></span>
-            <span>BB: <b style="color:#ffaa00">{estado_pos['bb_p'] if estado_pos else '—'}</b></span>
-            <span>EMA9▲: <b style="color:{'#00ff88' if estado_pos and estado_pos['p9']>0 else '#ff3355'}">{estado_pos['p9'] if estado_pos else '—'}</b></span>
-            <span>+DI: <b style="color:#00ff88">{estado_pos['dip'] if estado_pos else '—'}</b></span>
-            <span>Vel: <b style="color:{'#00ff88' if estado_pos and estado_pos['vel']>0 else '#ff3355'}">{'↑' if estado_pos and estado_pos['vel']>0 else '↓'}</b></span>
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);
+                    gap:4px;margin-top:10px;
+                    font-family:'Share Tech Mono',monospace;font-size:0.72rem">
+            <div style="text-align:center">
+                <div style="color:#2a4060">RSI</div>
+                <div style="color:#ff8844;font-weight:700">{est['rsi']}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">ADX</div>
+                <div style="color:#44aaff;font-weight:700">{est['adx']}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">BB%</div>
+                <div style="color:#ffaa00;font-weight:700">{est['bb_p']}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">EMA9</div>
+                <div style="color:{'#00ff88' if est['p9']>0 else '#ff3355'};font-weight:700">
+                    {'UP' if est['p9']>0 else 'DN'}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">EMA21</div>
+                <div style="color:{'#00ff88' if est['p21']>0 else '#ff3355'};font-weight:700">
+                    {'UP' if est['p21']>0 else 'DN'}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">+DI/-DI</div>
+                <div style="color:{'#00ff88' if est['dip']>est['dim'] else '#ff3355'};font-weight:700">
+                    {'DI+' if est['dip']>est['dim'] else 'DI-'}</div>
+            </div>
+            <div style="text-align:center">
+                <div style="color:#2a4060">Kalman</div>
+                <div style="color:{'#00ff88' if est['vel']>0 else '#ff3355'};font-weight:700">
+                    {'Sube' if est['vel']>0 else 'Baja'}</div>
+            </div>
         </div>
     </div>""", unsafe_allow_html=True)
 
-    #  NIVELES DE GESTIN 
-    col_niv, col_sig = st.columns([1,1])
+    # Senales de salida
+    if est["senales"]:
+        for sig in est["senales"]:
+            if "STOP" in sig or "EMA9" in sig or "MACD" in sig or "sobrecomprado" in sig:
+                st.error(f"SALIR: {sig}")
+            else:
+                st.warning(f"Alerta: {sig}")
+    else:
+        st.success("Sin senales de salida - fuerza alcista activa")
 
-    with col_niv:
-        def nivel_html(lbl, pniv, actual, alcanzado):
-            dist = (pniv-actual)/(actual+1e-10)*100
-            ic   = "✅" if alcanzado else "⏳"
-            dcol = "#00ff88" if alcanzado else ("#4a6060" if dist>0 else "#ff3355")
-            dtxt = "ALCANZADO" if alcanzado else f"{dist:+.2f}%"
-            ncol = "#ff3355" if "SL" in lbl else (
-                   "#ffaa00" if "TP1" in lbl else (
-                   "#ffdd44" if "TP2" in lbl else "#ffffff"))
-            return f"""<div style="display:flex;justify-content:space-between;
-                        align-items:center;padding:6px 0;
-                        border-bottom:1px solid #0d1a2e;
-                        font-family:'Share Tech Mono',monospace;font-size:0.75rem">
-                <span style="color:#4a6060">{ic} {lbl}</span>
-                <span style="color:{ncol};font-weight:700">{fp(pniv)}</span>
-                <span style="color:{dcol}">{dtxt}</span>
-            </div>"""
+    st.divider()
 
-        st.markdown(f"""
-        <div style="background:#08090f;border:1px solid #1a2a4a;
-                    border-radius:10px;padding:12px 14px">
-            <div style="color:#4488ff;font-size:0.75rem;font-weight:700;
-                        margin-bottom:6px">📏 NIVELES</div>
-            {nivel_html("🛑 Stop Loss",trail_sl,precio_actual,sl_ok)}
-            {nivel_html("Entry",entry,precio_actual,False)}
-            {nivel_html("🎯 TP1 — 50%",tp1,precio_actual,tp1_ok)}
-            {nivel_html("🎯 TP2 — 75%",tp2,precio_actual,tp2_ok)}
-            {nivel_html("🏆 TP3 — 100%",tp3,precio_actual,tp3_ok)}
-        </div>""", unsafe_allow_html=True)
-
-    with col_sig:
-        # Seales de salida
-        señales = estado_pos["señales"] if estado_pos else []
-        st.markdown(f"""
-        <div style="background:#08090f;border:1px solid {'#ff3355' if urgencia>=2 else '#1a2a4a'};
-                    border-radius:10px;padding:12px 14px">
-            <div style="color:#4488ff;font-size:0.75rem;font-weight:700;
-                        margin-bottom:6px">🚨 SEÑALES DE SALIDA</div>""",
-        unsafe_allow_html=True)
-
-        if señales:
-            for sig in señales:
-                col_s = "#ff3355" if "🚨" in sig else "#ffaa00"
-                st.markdown(f"""<div style="font-family:'Share Tech Mono',monospace;
-                    font-size:0.75rem;color:{col_s};padding:4px 0;
-                    border-bottom:1px solid #0d1a2e">{sig}</div>""",
-                    unsafe_allow_html=True)
-        else:
-            st.markdown("""<div style="color:#00ff88;font-family:'Share Tech Mono',monospace;
-                font-size:0.78rem">✅ Sin señales — fuerza alcista activa</div>""",
-                unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        # Info de la posicin
-        tiempo_pos = pos_activa.get("tiempo","")[:16].replace("T"," ")
-        st.markdown(f"""
-        <div style="background:#08090f;border:1px solid #1a2a4a;
-                    border-radius:10px;padding:10px 14px;margin-top:8px;
-                    font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#4a6060">
-            Entrada: {tiempo_pos} UTC<br>
-            Score APEX: <b style="color:#00ff88">{pos_activa.get('score','—')}/100</b><br>
-            ATR entrada: <b style="color:#ffaa00">{pos_activa.get('atr_pct','—')}%</b><br>
-            Trail: <b style="color:#4488ff">{fp(float(pos_activa.get('trail',0)))}</b>
-        </div>""", unsafe_allow_html=True)
-
-    #  BOTN CERRAR + AUTO-REFRESH 
-    bt1, bt2, bt3 = st.columns(3)
-    with bt1:
-        if st.button("✅ CERRÉ MI POSICIÓN", key="cerrar_pos_v2",
-                    type="primary"):
-            supa_cerrar_posicion(sym, pnl_pct)
-            precio_tiempo_real.clear()
-            ohlc_seguimiento.clear()
-            st.success(f"✅ Posición cerrada — PnL: {pnl_pct:+.2f}%")
-            time.sleep(1); st.rerun()
-    with bt2:
-        if st.button("🔄 Actualizar datos", key="refresh_pos_v2"):
-            precio_tiempo_real.clear()
-            ohlc_seguimiento.clear()
-            st.rerun()
-    with bt3:
-        st.caption(f"⏱ Datos cada 30 seg · Supabase {'✅' if SUPA_OK else '⚠️ local'}")
-
-# ==============================================================
-#  ALTO IMPACTO  Inyectar en APEX resultado
-#  (Se llama desde el bloque APEX para mostrar el ranking #1)
-# ==============================================================
-# Esta funcin se llama DESPUS de calcular resultados_ap en APEX
-# Agrega una seccin " TOP ALTO IMPACTO" encima de los tabs
+    # Auto-update
+    if auto_update:
+        time.sleep(60)
+        get_precio_rt.clear()
+        get_ohlc_rt.clear()
+        st.rerun()
