@@ -2141,6 +2141,1238 @@ if "apex_posiciones" not in st.session_state:
 # ==============================================================
 #  MOTOR APEX  anlisis de alta precisin por par
 # ==============================================================
+def apex_analizar(df, sym):
+    """
+    Los 3 filtros en cascada + señal de salida.
+    Retorna dict completo con todo lo necesario para operar.
+    """
+    if df is None or df.empty or len(df) < 30:
+        return None
+    try:
+        c = df["Close"]; h = df["High"]; l = df["Low"]; o = df["Open"]
+        v = df["Volume"]; n = len(c)
+
+        # ====================================================
+        #  INDICADORES BASE
+        # ====================================================
+        # EMAs
+        e9   = c.ewm(span=9,   adjust=False).mean()
+        e21  = c.ewm(span=21,  adjust=False).mean()
+        e50  = c.ewm(span=50,  adjust=False).mean()
+        e200 = c.ewm(span=200, adjust=False).mean()
+
+        # RSI con EWM (ms reactivo)
+        d  = c.diff()
+        g  = d.clip(lower=0).ewm(com=13, adjust=False).mean()
+        ls = (-d.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rsi = 100 - (100/(1 + g/(ls+1e-10)))
+
+        # MACD
+        ef   = c.ewm(span=12, adjust=False).mean()
+        es   = c.ewm(span=26, adjust=False).mean()
+        macd = ef - es
+        msig = macd.ewm(span=9, adjust=False).mean()
+        mhist= macd - msig
+
+        # Bollinger
+        bb_m = c.rolling(20).mean()
+        bb_s = c.rolling(20).std()
+        bb_u = bb_m + 2*bb_s
+        bb_l = bb_m - 2*bb_s
+        bb_p = (c - bb_l)/(bb_u - bb_l + 1e-9)
+
+        # ATR
+        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = tr.ewm(span=14, adjust=False).mean()
+
+        # ADX + DI
+        dm_p = h.diff().clip(lower=0)
+        dm_n = (-l.diff()).clip(lower=0)
+        dm_p = dm_p.where(dm_p > dm_n, 0)
+        dm_n = dm_n.where(dm_n > dm_p, 0)
+        atr14= tr.ewm(span=14, adjust=False).mean()
+        dip  = (dm_p.ewm(span=14,adjust=False).mean()/(atr14+1e-10))*100
+        dim  = (dm_n.ewm(span=14,adjust=False).mean()/(atr14+1e-10))*100
+        dx   = ((dip-dim).abs()/(dip+dim+1e-10))*100
+        adx  = dx.ewm(span=14, adjust=False).mean()
+
+        # Kalman (velocidad y aceleracin)
+        pk   = c.ewm(span=5,  adjust=False).mean()
+        vel  = pk.diff()
+        acc  = vel.diff()
+
+        # Stoch RSI
+        rsi_mn = rsi.rolling(14).min()
+        rsi_mx = rsi.rolling(14).max()
+        stoch  = (rsi - rsi_mn)/(rsi_mx - rsi_mn + 1e-9)*100
+        stoch_k= stoch.rolling(3).mean()
+
+        # Volumen
+        vol_sma  = v.rolling(20).mean()
+        vol_ratio= v/(vol_sma+1e-10)
+
+        # OBV (On Balance Volume)
+        obv_delta = np.where(c.diff()>0, v, np.where(c.diff()<0, -v, 0))
+        obv       = pd.Series(obv_delta, index=c.index).cumsum()
+        obv_trend = obv.diff(3)
+
+        # Valores actuales
+        cv  = c.iloc[-1];  c2  = c.iloc[-2]
+        e9v = e9.iloc[-1]; e21v= e21.iloc[-1]
+        e50v= e50.iloc[-1];e200v=e200.iloc[-1]
+        rsi_v   = float(rsi.iloc[-1])   if not np.isnan(rsi.iloc[-1])   else 50
+        rsi_p   = float(rsi.iloc[-2])   if not np.isnan(rsi.iloc[-2])   else 50
+        mh_v    = float(mhist.iloc[-1]) if not np.isnan(mhist.iloc[-1]) else 0
+        mh_p    = float(mhist.iloc[-2]) if not np.isnan(mhist.iloc[-2]) else 0
+        mh_p2   = float(mhist.iloc[-3]) if n>3 and not np.isnan(mhist.iloc[-3]) else mh_p
+        bb_v    = float(bb_p.iloc[-1])  if not np.isnan(bb_p.iloc[-1])  else 0.5
+        adx_v   = float(adx.iloc[-1])   if not np.isnan(adx.iloc[-1])   else 0
+        adx_p   = float(adx.iloc[-2])   if not np.isnan(adx.iloc[-2])   else 0
+        dip_v   = float(dip.iloc[-1])   if not np.isnan(dip.iloc[-1])   else 0
+        dim_v   = float(dim.iloc[-1])   if not np.isnan(dim.iloc[-1])   else 0
+        atr_v   = float(atr.iloc[-1])   if not np.isnan(atr.iloc[-1])   else cv*0.02
+        vel_v   = float(vel.iloc[-1])   if not np.isnan(vel.iloc[-1])   else 0
+        vel_p   = float(vel.iloc[-2])   if not np.isnan(vel.iloc[-2])   else 0
+        acc_v   = float(acc.iloc[-1])   if not np.isnan(acc.iloc[-1])   else 0
+        vr_v    = float(vol_ratio.iloc[-1]) if not np.isnan(vol_ratio.iloc[-1]) else 1
+        sk_v    = float(stoch_k.iloc[-1])   if not np.isnan(stoch_k.iloc[-1])   else 50
+        obv_t   = float(obv_trend.iloc[-1]) if not np.isnan(obv_trend.iloc[-1]) else 0
+
+        # Pendientes EMA
+        p9  = (e9.iloc[-1]  - e9.iloc[-4])  /(e9.iloc[-4]+1e-10)*100  if n>4 else 0
+        p21 = (e21.iloc[-1] - e21.iloc[-4]) /(e21.iloc[-4]+1e-10)*100 if n>4 else 0
+        p50 = (e50.iloc[-1] - e50.iloc[-4]) /(e50.iloc[-4]+1e-10)*100 if n>4 else 0
+
+        # Cascada velas verdes
+        cascada = 0
+        for i in range(1, min(10,n)):
+            if c.iloc[-i] > o.iloc[-i]: cascada+=1
+            else: break
+
+        atr_pct = atr_v/cv*100
+
+        # ====================================================
+        #  FILTRO 1  TENDENCIA BASE
+        #  Necesita: precio > EMA200 + EMAs alineadas + ADX fuerte
+        # ====================================================
+        f1_score = 0
+        f1_det   = {}
+
+        # Precio sobre EMA200
+        sobre_e200 = cv > e200v
+        if sobre_e200:
+            gap200 = (cv-e200v)/(e200v+1e-10)*100
+            if gap200 > 5:   f1_score+=25; f1_det["EMA200"]="🟢 +{:.1f}% sobre".format(gap200)
+            elif gap200 > 1: f1_score+=18; f1_det["EMA200"]="🟡 +{:.1f}% sobre".format(gap200)
+            else:            f1_score+=10; f1_det["EMA200"]="🟡 Recién cruzó"
+        else:
+            f1_det["EMA200"]="🔴 Bajo EMA200"
+
+        # Alineacin EMAs
+        if e9v > e21v > e50v > e200v:
+            f1_score+=25; f1_det["EMAs"]="🟢 Alineación perfecta ↑"
+        elif e9v > e21v > e50v:
+            f1_score+=18; f1_det["EMAs"]="🟡 EMA9>21>50 ↑"
+        elif e9v > e21v:
+            f1_score+=10; f1_det["EMAs"]="🟡 EMA9>21"
+        else:
+            f1_det["EMAs"]="🔴 Desalineadas"
+
+        # ADX tendencia fuerte
+        if adx_v > 35:   f1_score+=25; f1_det["ADX"]="🟢 {:.0f} MUY FUERTE".format(adx_v)
+        elif adx_v > 25: f1_score+=18; f1_det["ADX"]="🟡 {:.0f} Fuerte".format(adx_v)
+        elif adx_v > 18: f1_score+=8;  f1_det["ADX"]="🟡 {:.0f} Moderado".format(adx_v)
+        else:            f1_det["ADX"]="🔴 {:.0f} Débil".format(adx_v)
+
+        # DI+ vs DI-
+        if dip_v > dim_v + 5:  f1_score+=15; f1_det["DI"]="🟢 +DI {:.0f} domina".format(dip_v)
+        elif dip_v > dim_v:    f1_score+=8;  f1_det["DI"]="🟡 +DI leve"
+        else:                  f1_det["DI"]="🔴 -DI domina"
+
+        # Pendiente EMA50
+        if p50 > 0.3:   f1_score+=10; f1_det["Pendiente"]="🟢 EMA50 sube {:.3f}%".format(p50)
+        elif p50 > 0:   f1_score+=5;  f1_det["Pendiente"]="🟡 EMA50 plana"
+        else:           f1_det["Pendiente"]="🔴 EMA50 baja"
+
+        f1_max   = 100
+        f1_pct   = min(100, f1_score)
+        f1_pasa  = f1_pct >= 55
+
+        # ====================================================
+        #  FILTRO 2  IMPULSO ACTIVO
+        #  Necesita: MACD + Kalman + Volumen + OBV + Cascada
+        # ====================================================
+        f2_score = 0
+        f2_det   = {}
+
+        # MACD cruce o aceleracin
+        cruce_macd = mh_p<=0 and mh_v>0
+        acel_macd  = mh_v>0 and mh_v>mh_p>mh_p2
+        if cruce_macd:
+            f2_score+=30; f2_det["MACD"]="🟢 CRUCE ALCISTA ⚡"
+        elif acel_macd:
+            f2_score+=22; f2_det["MACD"]="🟢 Acelerando ↑↑"
+        elif mh_v > 0 and mh_v > mh_p:
+            f2_score+=14; f2_det["MACD"]="🟡 Positivo y creciendo"
+        elif mh_v > 0:
+            f2_score+=7;  f2_det["MACD"]="🟡 Positivo"
+        else:
+            f2_det["MACD"]="🔴 Negativo"
+
+        # Kalman velocidad y aceleracin
+        if vel_v > 0 and acc_v > 0:
+            f2_score+=25; f2_det["Kalman"]="🟢 Vel+ · Acel+ ↑↑"
+        elif vel_v > 0 and vel_v > vel_p:
+            f2_score+=18; f2_det["Kalman"]="🟢 Acelerando ↑"
+        elif vel_v > 0:
+            f2_score+=10; f2_det["Kalman"]="🟡 Velocidad positiva"
+        else:
+            f2_det["Kalman"]="🔴 Decelerando"
+
+        # Volumen spike
+        if vr_v > 2.5:  f2_score+=25; f2_det["Volumen"]="🟢 SPIKE {:.1f}x ⚡".format(vr_v)
+        elif vr_v > 1.8: f2_score+=18; f2_det["Volumen"]="🟢 Alto {:.1f}x".format(vr_v)
+        elif vr_v > 1.3: f2_score+=10; f2_det["Volumen"]="🟡 Elevado {:.1f}x".format(vr_v)
+        elif vr_v > 0.8: f2_score+=4;  f2_det["Volumen"]="⚪ Normal {:.1f}x".format(vr_v)
+        else:            f2_det["Volumen"]="🔴 Seco {:.1f}x".format(vr_v)
+
+        # OBV acumulacin
+        if obv_t > 0:   f2_score+=12; f2_det["OBV"]="🟢 Acumulación neta"
+        else:           f2_det["OBV"]="🔴 Distribución"
+
+        # Cascada velas
+        if cascada >= 4: f2_score+=8;  f2_det["Cascada"]="🟢 {} velas ↑".format(cascada)
+        elif cascada>=2: f2_score+=5;  f2_det["Cascada"]="🟡 {} velas ↑".format(cascada)
+        else:            f2_det["Cascada"]="⚪ {} velas".format(cascada)
+
+        f2_pct  = min(100, f2_score)
+        f2_pasa = f2_pct >= 55
+
+        # ====================================================
+        #  FILTRO 3  ENTRADA PRECISA
+        #  Necesita: RSI en zona correcta + BB bajo + EMA21
+        # ====================================================
+        f3_score = 0
+        f3_det   = {}
+
+        # RSI zona ideal (saliendo de sobreventa, no sobrecomprado)
+        if 28 <= rsi_v <= 48 and rsi_v > rsi_p:
+            f3_score+=30; f3_det["RSI"]="🟢 {:.0f} — Saliendo sobreventa ↑".format(rsi_v)
+        elif 28 <= rsi_v <= 55:
+            f3_score+=20; f3_det["RSI"]="🟡 {:.0f} — Zona sana".format(rsi_v)
+        elif rsi_v < 28:
+            f3_score+=15; f3_det["RSI"]="🟡 {:.0f} — Sobreventa extrema".format(rsi_v)
+        elif rsi_v > 70:
+            f3_det["RSI"]="🔴 {:.0f} — Sobrecomprado".format(rsi_v)
+        else:
+            f3_score+=8; f3_det["RSI"]="⚪ {:.0f} — Zona alta".format(rsi_v)
+
+        # Posicin en Bollinger
+        if bb_v < 0.15:
+            f3_score+=25; f3_det["BB"]="🟢 {:.2f} — Bajo banda inf".format(bb_v)
+        elif bb_v < 0.35:
+            f3_score+=18; f3_det["BB"]="🟢 {:.2f} — Zona baja".format(bb_v)
+        elif bb_v < 0.55:
+            f3_score+=10; f3_det["BB"]="🟡 {:.2f} — Centro".format(bb_v)
+        elif bb_v > 0.85:
+            f3_det["BB"]="🔴 {:.2f} — Sobre banda sup".format(bb_v)
+        else:
+            f3_score+=4; f3_det["BB"]="🟡 {:.2f} — Zona alta".format(bb_v)
+
+        # Ruptura EMA21 (precio acaba de cruzar desde abajo)
+        cruce_e21 = c2 <= e21.iloc[-2] and cv > e21v
+        sobre_e21 = cv > e21v
+        gap21     = (cv-e21v)/(e21v+1e-10)*100
+        if cruce_e21:
+            f3_score+=30; f3_det["EMA21"]="🟢 RUPTURA EMA21 ⚡"
+        elif sobre_e21 and gap21 < 2:
+            f3_score+=18; f3_det["EMA21"]="🟢 Recién sobre EMA21"
+        elif sobre_e21 and gap21 < 5:
+            f3_score+=10; f3_det["EMA21"]="🟡 Sobre EMA21 +{:.1f}%".format(gap21)
+        else:
+            f3_det["EMA21"]="🔴 Bajo EMA21"
+
+        # StochRSI zona entrada
+        if sk_v < 20 and sk_v > stoch_k.iloc[-2] if not np.isnan(stoch_k.iloc[-2]) else False:
+            f3_score+=15; f3_det["StochRSI"]="🟢 {:.0f} — Cruce alcista".format(sk_v)
+        elif sk_v < 30:
+            f3_score+=8;  f3_det["StochRSI"]="🟡 {:.0f} — Sobreventa".format(sk_v)
+        elif sk_v > 80:
+            f3_det["StochRSI"]="🔴 {:.0f} — Sobrecompra".format(sk_v)
+        else:
+            f3_score+=4; f3_det["StochRSI"]="⚪ {:.0f} — Neutral".format(sk_v)
+
+        f3_pct  = min(100, f3_score)
+        f3_pasa = f3_pct >= 55
+
+        # ====================================================
+        #  SCORE APEX GLOBAL (0-100)
+        # ====================================================
+        # Ponderacin: F130% + F235% + F335%
+        apex_score = int(f1_pct*0.30 + f2_pct*0.35 + f3_pct*0.35)
+
+        # Bonus de confluencia mxima  todos los filtros fuertes
+        if f1_pct>=70 and f2_pct>=70 and f3_pct>=70:
+            apex_score = min(100, apex_score + 12)
+
+        # Penalizacin si algn filtro falla completamente
+        if not f1_pasa: apex_score = min(apex_score, 45)
+        if not f2_pasa: apex_score = min(apex_score, 50)
+        if not f3_pasa: apex_score = min(apex_score, 48)
+
+        todos_pasan = f1_pasa and f2_pasa and f3_pasa
+
+        # ====================================================
+        #  NIVELES DE ENTRADA (ATR-based, alta precisin)
+        # ====================================================
+        entry = cv
+        # SL dinmico: mximo entre EMA21-buffer y precio-1.5ATR
+        sl    = max(e21v * 0.992, cv - 1.5*atr_v)
+        # TPs progresivos para maximizar ganancia en tendencias fuertes
+        tp1   = cv + 2.0*atr_v    # objetivo conservador
+        tp2   = cv + 4.0*atr_v    # objetivo moderado
+        tp3   = cv + 7.0*atr_v    # objetivo agresivo (dejar correr)
+        trail = 1.5*atr_v          # trailing stop dinámico
+
+        rr1   = (tp1-entry)/(entry-sl+1e-10)
+        rr2   = (tp2-entry)/(entry-sl+1e-10)
+
+        # ====================================================
+        #  SEALES DE SALIDA AUTOMTICA
+        # ====================================================
+        salidas = []
+
+        # 1. Mecha agotada
+        if rsi_v > 74 and bb_v > 0.88 and adx_v < adx_p:
+            salidas.append(("🔴 MECHA AGOTADA",
+                           "RSI:{:.0f} · BB:{:.2f} · ADX cayendo".format(rsi_v,bb_v)))
+
+        # 2. Tendencia rota  cruce bajista EMA9/EMA21
+        if e9.iloc[-2] >= e21.iloc[-2] and e9v < e21v:
+            salidas.append(("🔴 TENDENCIA ROTA",
+                           "EMA9 cruzó EMA21 hacia abajo ↓"))
+
+        # 3. Divergencia bajista (precio sube pero indicadores bajan)
+        if len(c) > 5:
+            precio_sube = cv > c.iloc[-5]
+            macd_baja   = mhist.iloc[-1] < mhist.iloc[-5]
+            kalman_baja = vel_v < 0
+            if precio_sube and macd_baja and kalman_baja:
+                salidas.append(("⚠️ DIVERGENCIA BAJISTA",
+                               "Precio ↑ pero MACD+Kalman ↓ — posible techo"))
+
+        # 4. MACD cruce bajista
+        if mhist.iloc[-2] >= 0 and mhist.iloc[-1] < 0:
+            salidas.append(("🔴 MACD CRUCE BAJISTA",
+                           "Histograma cruzó a negativo"))
+
+        # ====================================================
+        #  CLASIFICACIN FINAL
+        # ====================================================
+        if todos_pasan and apex_score >= 80:
+            clasificacion = "🚀 ENTRADA ÓPTIMA"
+            col_apex      = "#00ff88"
+            accion        = "ENTRAR AHORA"
+        elif todos_pasan and apex_score >= 65:
+            clasificacion = "⚡ ENTRADA BUENA"
+            col_apex      = "#44ffaa"
+            accion        = "ENTRAR CON TAMAÑO REDUCIDO"
+        elif f1_pasa and f2_pasa and apex_score >= 50:
+            clasificacion = "👀 CASI LISTA"
+            col_apex      = "#ffaa00"
+            accion        = "ESPERAR F3"
+        elif f1_pasa and apex_score >= 35:
+            clasificacion = "⏳ EN FORMACIÓN"
+            col_apex      = "#4488ff"
+            accion        = "MONITOREAR"
+        else:
+            clasificacion = "❌ NO CUMPLE"
+            col_apex      = "#ff3355"
+            accion        = "NO ENTRAR"
+
+        pfmt = (f"${cv:,.6f}" if cv<1 else
+                f"${cv:,.4f}" if cv<10 else
+                f"${cv:,.2f}")
+
+        return {
+            "sym":          sym,
+            "precio":       cv,
+            "precio_fmt":   pfmt,
+            "apex_score":   apex_score,
+            "clasificacion":clasificacion,
+            "col_apex":     col_apex,
+            "accion":       accion,
+            "todos_pasan":  todos_pasan,
+            # Filtros
+            "f1_pct":f1_pct,"f1_pasa":f1_pasa,"f1_det":f1_det,
+            "f2_pct":f2_pct,"f2_pasa":f2_pasa,"f2_det":f2_det,
+            "f3_pct":f3_pct,"f3_pasa":f3_pasa,"f3_det":f3_det,
+            # Niveles
+            "entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,
+            "trail":trail,"rr1":round(rr1,2),"rr2":round(rr2,2),
+            "atr_pct":round(atr_pct,2),
+            # Salidas
+            "salidas":salidas,
+            # Indicadores clave para display
+            "rsi":round(rsi_v,1),"adx":round(adx_v,1),
+            "dip":round(dip_v,1),"dim":round(dim_v,1),
+            "bb_pct":round(bb_v,3),"cascada":cascada,
+            "p9":round(p9,3),"p21":round(p21,3),
+            "vel_kalman":round(vel_v,5),"acc_kalman":round(acc_v,5),
+            "vol_ratio":round(vr_v,2),"cruce_macd":cruce_macd,
+            "cruce_e21":cruce_e21,
+        }
+    except Exception as e:
+        return None
+
+
+#  Pares APEX  los ms lquidos y con mayor potencial 
+APEX_PARES = [
+    ("bitcoin",            "BTC"),
+    ("ethereum",           "ETH"),
+    ("solana",             "SOL"),
+    ("avalanche-2",        "AVAX"),
+    ("near",               "NEAR"),
+    ("injective-protocol", "INJ"),
+    ("aptos",              "APT"),
+    ("arbitrum",           "ARB"),
+    ("optimism",           "OP"),
+    ("sui",                "SUI"),
+    ("fetch-ai",           "FET"),
+    ("chainlink",          "LINK"),
+    ("uniswap",            "UNI"),
+    ("aave",               "AAVE"),
+    ("ripple",             "XRP"),
+    ("dogecoin",           "DOGE"),
+    ("cardano",            "ADA"),
+    ("matic-network",      "MATIC"),
+    ("near",               "NEAR"),
+    ("pepe",               "PEPE"),
+    ("shiba-inu",          "SHIB"),
+]
+# Deduplicate
+seen = set()
+APEX_PARES = [(cid,sym) for cid,sym in APEX_PARES
+              if not (sym in seen or seen.add(sym))]
+
+APEX_DIAS_MAP = {
+    "4H · 10 días":  ("4h",  10),
+    "1D · 30 días":  ("1d",  30),
+    "1D · 90 días":  ("1d",  90),
+}
+
+
+# ==============================================================
+#  UI  APEX
+# ==============================================================
+st.sidebar.divider()
+st.sidebar.markdown("**🚀 AI.LINO APEX**")
+with st.sidebar:
+    tf_apex  = st.selectbox("⏱ TF Apex:",
+                            list(APEX_DIAS_MAP.keys()),
+                            index=1, key="tf_apex_sel")
+    run_apex = st.button("🚀 EJECUTAR APEX",
+                         use_container_width=True, key="btn_apex")
+
+def filtro_alto_impacto(resultados, min_atr_pct=2.5, min_score=65):
+    """
+    Filtra los resultados del scanner para mostrar SOLO
+    las criptos con mayor potencial de rendimiento:
+
+    1. ATR% ≥ 2.5% — mínimo movimiento diario esperado
+       (menos de 2.5% = no vale el riesgo/tiempo)
+    2. Score APEX ≥ 65 — confluencia fuerte
+    3. R/R ≥ 2.0 — mínimo 2 de ganancia por 1 de riesgo
+    4. Vol ratio ≥ 1.5 — volumen real, no fantasma
+    5. ADX ≥ 20 — tendencia con fuerza real
+    6. Los 3 filtros pasan
+
+    Ordena por: score × ATR% (mayor puntuación relativa al movimiento)
+    """
+    filtrados = []
+    for r in resultados:
+        # Criterios de alto impacto
+        if r["atr_pct"]  < min_atr_pct: continue   # muy pequeño movimiento
+        if r["apex_score"] < min_score:  continue   # confluencia insuficiente
+        if r["rr1"]      < 2.0:          continue   # R/R malo
+        if r["vol_ratio"] < 1.3:         continue   # sin volumen real
+        if r["adx"]      < 18:           continue   # sin tendencia
+        if not r["todos_pasan"]:         continue   # filtros no completos
+
+        # Score de impacto = score  ATR%  R/R (maximiza los tres)
+        r["impacto"] = round(r["apex_score"] * r["atr_pct"] * r["rr1"] / 100, 2)
+        filtrados.append(r)
+
+    # Ordenar por impacto total
+    filtrados.sort(key=lambda x: x["impacto"], reverse=True)
+    return filtrados
+
+
+# ==============================================================
+#  INDICADORES EN TIEMPO REAL (para el panel de seguimiento)
+# ==============================================================
+
+def mostrar_ranking_alto_impacto(resultados_ap):
+    """
+    Muestra el ranking filtrado de alto impacto —
+    solo los que valen el riesgo y dan alto rendimiento.
+    """
+    top_ai = filtro_alto_impacto(resultados_ap)
+
+    if not top_ai:
+        st.info("⏳ Sin señales de alto impacto ahora — el mercado no está en condiciones óptimas. "
+               "Espera o baja los filtros.")
+        return
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#001428,#001a0a);
+                border:2px solid #00ff88;border-radius:12px;
+                padding:14px 20px;margin:10px 0;
+                font-family:'Orbitron',monospace">
+        <div style="color:#00ff88;font-size:1rem;font-weight:700;letter-spacing:2px">
+            🏆 RANKING ALTO IMPACTO — {len(top_ai)} señales elite
+        </div>
+        <div style="color:#4488ff;font-size:0.72rem;margin-top:3px">
+            ATR≥2.5% · Score≥65 · R/R≥2x · Volumen real · ADX≥18 · 3 filtros activos
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    # Top 3 con cards destacadas
+    top3_ai = top_ai[:3]
+    cols_ai  = st.columns(len(top3_ai))
+
+    for i,(r,col_ai) in enumerate(zip(top3_ai, cols_ai)):
+        medalla = ["🥇","🥈","🥉"][i]
+        col = r["col_apex"]
+        with col_ai:
+            # Card de alto impacto
+            st.markdown(f"""
+            <div style="background:#08090f;border:2px solid {col};
+                        border-radius:12px;padding:14px;
+                        font-family:'Share Tech Mono',monospace">
+                <div style="font-family:'Orbitron',monospace;font-size:1.1rem;
+                            color:{col};font-weight:700">
+                    {medalla} {r['sym']}/USDT
+                </div>
+                <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">
+                    {r['clasificacion']}
+                </div>
+                <!-- Score e impacto -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;
+                            gap:8px;margin:8px 0">
+                    <div style="text-align:center;padding:6px;
+                                background:#0d1428;border-radius:6px">
+                        <div style="color:#2a4060;font-size:0.62rem">APEX SCORE</div>
+                        <div style="color:{col};font-size:1.4rem;font-weight:700">
+                            {r['apex_score']}</div>
+                    </div>
+                    <div style="text-align:center;padding:6px;
+                                background:#0d1428;border-radius:6px">
+                        <div style="color:#2a4060;font-size:0.62rem">IMPACTO</div>
+                        <div style="color:#ffdd44;font-size:1.4rem;font-weight:700">
+                            {r['impacto']}</div>
+                    </div>
+                </div>
+                <!-- Métricas clave -->
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
+                            gap:3px;font-size:0.72rem;margin-bottom:8px">
+                    <div>ATR: <b style="color:#ffaa00">{r['atr_pct']}%</b></div>
+                    <div>R/R: <b style="color:#00ff88">{r['rr1']}x</b></div>
+                    <div>ADX: <b style="color:#44aaff">{r['adx']}</b></div>
+                    <div>RSI: <b style="color:#ff8844">{r['rsi']}</b></div>
+                    <div>Vol: <b style="color:#4488ff">{r['vol_ratio']}x</b></div>
+                    <div>🕯: <b style="color:#00ff88">{r['cascada']}</b></div>
+                </div>
+                <!-- Niveles -->
+                <div style="border-top:1px solid #0d1a2e;padding-top:8px;font-size:0.7rem">
+                    <div style="color:#00ff88">Entry: {r['precio_fmt']}</div>
+                    <div style="color:#ff3355">SL: {fp(r['sl'])}</div>
+                    <div style="color:#ffaa00">TP1: {fp(r['tp1'])}
+                        <span style="color:#4a6060"> R/R {r['rr1']}x</span></div>
+                    <div style="color:#ffdd44">TP2: {fp(r['tp2'])}
+                        <span style="color:#4a6060"> R/R {r['rr2']}x</span></div>
+                    <div style="color:#ffffff">TP3: {fp(r['tp3'])}</div>
+                </div>
+                <!-- Filtros -->
+                <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;
+                            gap:3px;font-size:0.68rem">
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f1_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f1_pasa'] else '#ff3355'}">
+                        {'✅' if r['f1_pasa'] else '❌'} F1</div>
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f2_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f2_pasa'] else '#ff3355'}">
+                        {'✅' if r['f2_pasa'] else '❌'} F2</div>
+                    <div style="text-align:center;padding:3px;border-radius:4px;
+                                background:{'#001a0a' if r['f3_pasa'] else '#1a0005'};
+                                color:{'#00ff88' if r['f3_pasa'] else '#ff3355'}">
+                        {'✅' if r['f3_pasa'] else '❌'} F3</div>
+                </div>
+            </div>""", unsafe_allow_html=True)
+
+            # Botn seguimiento directo
+            cid_ai = next((ci for ci,sy in APEX_PARES if sy==r["sym"]), None)
+            if cid_ai:
+                import uuid as _u2
+                if st.button(f"🎯 SEGUIR EN VIVO {medalla}",
+                            key=f"ai_live_{r['sym']}_{str(_u2.uuid4())[:6]}",
+                            type="primary"):
+                    supa_guardar_posicion_activa({
+                        "sym":       r["sym"],
+                        "cid":       cid_ai,
+                        "entry":     r["precio"],
+                        "sl":        r["sl"],
+                        "tp1":       r["tp1"],
+                        "tp2":       r["tp2"],
+                        "tp3":       r["tp3"],
+                        "trail":     r["trail"],
+                        "trail_sl":  r["sl"],
+                        "max_precio":r["precio"],
+                        "atr_pct":   r["atr_pct"],
+                        "score":     r["apex_score"],
+                        "tiempo":    datetime.utcnow().isoformat(),
+                        "activa":    True,
+                    })
+                    supa_guardar_apex_signal(
+                        r["sym"],"ENTRADA",r["precio"],
+                        r["apex_score"],r["sl"],r["tp1"],r["tp2"],
+                        f"Impacto:{r['impacto']}"
+                    )
+                    st.success(f"✅ {r['sym']} en seguimiento — desplázate arriba para ver el panel")
+                    time.sleep(1); st.rerun()
+
+    # Tabla completa alto impacto
+    if len(top_ai) > 3:
+        with st.expander(f"📋 Ver todos los {len(top_ai)} pares de alto impacto"):
+            filas_ai = []
+            for r in top_ai:
+                filas_ai.append({
+                    "Par":      r["sym"]+"/USDT",
+                    "Impacto":  r["impacto"],
+                    "APEX":     r["apex_score"],
+                    "ATR%":     r["atr_pct"],
+                    "R/R":      r["rr1"],
+                    "Vol":      r["vol_ratio"],
+                    "ADX":      r["adx"],
+                    "RSI":      r["rsi"],
+                    "Entry":    r["precio_fmt"],
+                    "TP1":      fp(r["tp1"]),
+                    "TP3":      fp(r["tp3"]),
+                })
+            st.dataframe(pd.DataFrame(filas_ai),
+                        use_container_width=True, hide_index=True,
+                        column_config={
+                            "Impacto": st.column_config.ProgressColumn(
+                                "Impacto", min_value=0, max_value=500, format="%.1f"),
+                            "APEX": st.column_config.ProgressColumn(
+                                "APEX", min_value=0, max_value=100, format="%d"),
+                        })
+
+
+if run_apex:
+    st.divider()
+    # Header APEX
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#001a0a,#0d1428);
+                border:1px solid #00ff88;border-radius:12px;
+                padding:16px 20px;margin-bottom:16px;
+                font-family:'Orbitron',monospace">
+        <div style="color:#00ff88;font-size:1.3rem;font-weight:700;
+                    letter-spacing:3px">🚀 AI.LINO APEX</div>
+        <div style="color:#4488ff;font-size:0.78rem;margin-top:4px">
+            SISTEMA DE ENTRADA DE ALTA PRECISIÓN · 3 FILTROS EN CASCADA
+        </div>
+        <div style="color:#2a4060;font-size:0.72rem;margin-top:4px">
+            F1: Tendencia Base · F2: Impulso Activo · F3: Entrada Precisa
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    iv_ap, d_ap = APEX_DIAS_MAP[tf_apex]
+
+    #  Descarga y anlisis 
+    prog_ap = st.progress(0)
+    resultados_ap = []
+    total_ap = len(APEX_PARES)
+
+    for i_ap,(cid,sym) in enumerate(APEX_PARES):
+        prog_ap.progress((i_ap+1)/total_ap,
+                        text=f"🔬 Analizando {sym} — {i_ap+1}/{total_ap}")
+        try:
+            df_ap = binance_descargar(sym+"USDT", iv_ap, d_ap)
+            if df_ap is None or df_ap.empty:
+                df_ap = coingecko_descargar(cid, d_ap)
+            res_ap = apex_analizar(df_ap, sym)
+            if res_ap: resultados_ap.append(res_ap)
+        except:
+            pass
+        time.sleep(0.1)
+    prog_ap.empty()
+
+    if not resultados_ap:
+        st.error("No se pudieron analizar los pares. Verifica conexión.")
+    else:
+        resultados_ap.sort(key=lambda x: x["apex_score"], reverse=True)
+
+        optimas  = [r for r in resultados_ap if "ÓPTIMA" in r["clasificacion"]]
+        buenas   = [r for r in resultados_ap if "BUENA"  in r["clasificacion"]]
+        casi     = [r for r in resultados_ap if "CASI"   in r["clasificacion"]]
+        formando = [r for r in resultados_ap if "FORMACIÓN" in r["clasificacion"]
+                    or "MONITOR" in r.get("accion","")]
+
+        st.caption(f"🔬 {len(resultados_ap)} pares analizados · "
+                  f"🚀 {len(optimas)} óptimas · "
+                  f"⚡ {len(buenas)} buenas · "
+                  f"👀 {len(casi)} casi listas")
+
+        #  RANKING ALTO IMPACTO  Lo mejor de lo mejor 
+        mostrar_ranking_alto_impacto(resultados_ap)
+        st.divider()
+
+        #  GRFICO RADAR DE SCORES 
+        top_vis = resultados_ap[:16]
+        fig_ap  = plt.figure(figsize=(14,5), facecolor=BG)
+        ax_ap   = fig_ap.add_subplot(1,1,1); estilizar_ax(ax_ap)
+        x_ap    = np.arange(len(top_vis))
+        w       = 0.28
+
+        f1s = [r["f1_pct"] for r in top_vis]
+        f2s = [r["f2_pct"] for r in top_vis]
+        f3s = [r["f3_pct"] for r in top_vis]
+
+        ax_ap.bar(x_ap-w,   f1s, w, color="#1D9E75", alpha=0.8, label="F1 Tendencia")
+        ax_ap.bar(x_ap,     f2s, w, color="#7F77DD", alpha=0.8, label="F2 Impulso")
+        ax_ap.bar(x_ap+w,   f3s, w, color="#BA7517", alpha=0.8, label="F3 Entrada")
+
+        # Score APEX como lnea
+        ax_ap2 = ax_ap.twinx()
+        ax_ap2.plot(x_ap, [r["apex_score"] for r in top_vis],
+                   color="#00ff88", lw=2, marker="o", markersize=5,
+                   label="Score APEX")
+        ax_ap2.set_ylim(0,115); ax_ap2.set_ylabel("Score APEX",color="#00ff88",fontsize=8)
+        ax_ap2.tick_params(colors="#00ff88", labelsize=7)
+        ax_ap2.axhline(80, color="#00ff88", lw=0.8, ls="--", alpha=0.5)
+        ax_ap2.axhline(65, color="#ffaa00", lw=0.8, ls=":", alpha=0.5)
+
+        ax_ap.set_xticks(x_ap)
+        ax_ap.set_xticklabels([r["sym"] for r in top_vis],
+                              rotation=35, ha="right", fontsize=8, color="#4a6080")
+        ax_ap.set_ylim(0,115)
+        ax_ap.legend(fontsize=7, framealpha=0.3, loc="upper left")
+        ax_ap.set_title("APEX — Desglose de 3 Filtros por Par",
+                       color="#4488ff", fontsize=10)
+        ax_ap.axhline(55, color="#ffaa00", lw=0.6, ls=":", alpha=0.4)
+        plt.tight_layout(); render_fig(fig_ap)
+
+        #  TABS 
+        tab_labels_ap = []
+        grupos_ap     = []
+        if optimas:  tab_labels_ap.append(f"🚀 Óptima ({len(optimas)})");  grupos_ap.append(optimas)
+        if buenas:   tab_labels_ap.append(f"⚡ Buena ({len(buenas)})");    grupos_ap.append(buenas)
+        if casi:     tab_labels_ap.append(f"👀 Casi ({len(casi)})");       grupos_ap.append(casi)
+        if formando: tab_labels_ap.append(f"⏳ Formación ({len(formando)})");grupos_ap.append(formando)
+        tab_labels_ap.append("📋 Todos")
+        grupos_ap.append(resultados_ap)
+
+        tabs_ap = st.tabs(tab_labels_ap)
+
+        for tab_obj_ap, grupo_ap in zip(tabs_ap, grupos_ap):
+            with tab_obj_ap:
+                # Cards top 3
+                top3_ap = grupo_ap[:3]
+                if top3_ap:
+                    cols_ap = st.columns(min(3, len(top3_ap)))
+                    for i_c, (r, col_c) in enumerate(zip(top3_ap, cols_ap)):
+                        with col_c:
+                            col = r["col_apex"]
+                            rr1c="#00ff88" if r["rr1"]>=2 else("#ffaa00" if r["rr1"]>=1.5 else "#ff3355")
+
+                            # Header de la card
+                            st.markdown(f"""
+                            <div style="border:2px solid {col};border-radius:10px;
+                                        background:#08090f;padding:12px 14px;
+                                        font-family:'Share Tech Mono',monospace">
+                                <div style="font-family:'Orbitron',monospace;
+                                            font-size:1rem;color:{col};font-weight:700">
+                                    {r['sym']}/USDT
+                                </div>
+                                <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">
+                                    {r['clasificacion']}
+                                </div>
+                                <div style="font-size:1.5rem;font-weight:700;color:{col}">
+                                    {r['apex_score']}/100
+                                </div>
+                                <div style="font-size:0.85rem;color:#c0d8ff;margin:3px 0">
+                                    {r['precio_fmt']}
+                                </div>
+                            </div>""", unsafe_allow_html=True)
+
+                            # Barras de filtros
+                            for f_lbl,f_val,f_col in [
+                                ("F1 Tendencia",r["f1_pct"],"#1D9E75"),
+                                ("F2 Impulso",  r["f2_pct"],"#7F77DD"),
+                                ("F3 Entrada",  r["f3_pct"],"#BA7517"),
+                            ]:
+                                ic = "✅" if f_val>=55 else "❌"
+                                st.markdown(f"""
+                                <div style="margin:3px 0;font-family:'Share Tech Mono',monospace">
+                                    <div style="display:flex;justify-content:space-between;
+                                                font-size:0.7rem;color:#4a6060">
+                                        <span>{ic} {f_lbl}</span>
+                                        <span style="color:{f_col}">{f_val:.0f}/100</span>
+                                    </div>
+                                    <div style="background:#0d1428;border-radius:3px;height:7px;overflow:hidden">
+                                        <div style="width:{f_val}%;height:100%;
+                                                    background:{f_col};border-radius:3px"></div>
+                                    </div>
+                                </div>""", unsafe_allow_html=True)
+
+                            # Niveles
+                            st.markdown(f"""
+                            <div style="margin-top:8px;font-size:0.7rem;
+                                        border-top:1px solid #0d1a2e;padding-top:6px;
+                                        font-family:'Share Tech Mono',monospace">
+                                <div style="color:#00ff88">⚡ Entry: {r['precio_fmt']}</div>
+                                <div style="color:#ff3355">🛑 SL: {fp(r['sl'])}</div>
+                                <div style="color:#ffaa00">🎯 TP1: {fp(r['tp1'])} (R/R {r['rr1']}x)</div>
+                                <div style="color:#ffdd44">🎯 TP2: {fp(r['tp2'])} (R/R {r['rr2']}x)</div>
+                                <div style="color:#ffffff">🏆 TP3: {fp(r['tp3'])} (dejar correr)</div>
+                                <div style="color:#4a6080;margin-top:4px">
+                                    Trailing: {fp(r['trail'])} · ATR: {r['atr_pct']}%
+                                </div>
+                            </div>""", unsafe_allow_html=True)
+
+                            # Seales de salida activas
+                            if r["salidas"]:
+                                for sal_tipo, sal_desc in r["salidas"]:
+                                    st.error(f"{sal_tipo}: {sal_desc}")
+
+                            # Botn agregar al Live
+                            cid_btn = next((cid for cid,sym2 in APEX_PARES if sym2==r["sym"]),None)
+                            if cid_btn:
+                                import uuid as _uuid
+                                _btn_key = f"apex_live_{r['sym']}_{str(_uuid.uuid4())[:8]}"
+                                if st.button(f"🎯 SEGUIR EN VIVO — {r['sym']}", key=_btn_key,
+                                            type="primary"):
+                                    # Guardar posicin en Supabase (persiste entre sesiones)
+                                    supa_guardar_posicion_activa({
+                                        "sym":        r["sym"],
+                                        "cid":        cid_btn,
+                                        "entry":      r["precio"],
+                                        "sl":         r["sl"],
+                                        "tp1":        r["tp1"],
+                                        "tp2":        r["tp2"],
+                                        "tp3":        r["tp3"],
+                                        "trail":      r["trail"],
+                                        "atr_pct":    r["atr_pct"],
+                                        "score":      r["apex_score"],
+                                        "tiempo":     datetime.utcnow().isoformat(),
+                                        "trail_sl":   r["sl"],
+                                        "max_precio": r["precio"],
+                                        "activa":     True,
+                                    })
+                                    supa_guardar_apex_signal(
+                                        r["sym"],"ENTRADA",r["precio"],
+                                        r["apex_score"],r["sl"],r["tp1"],r["tp2"],
+                                        str(r["f1_det"])
+                                    )
+                                    st.success(f"✅ {r['sym']} en seguimiento — ve al panel 📡 AI.LINO LIVE")
+
+                st.markdown("&nbsp;")
+
+                #  DIAGNSTICO DETALLADO DEL #1 
+                if grupo_ap:
+                    top1_ap = grupo_ap[0]
+                    with st.expander(f"🔬 Diagnóstico completo — {top1_ap['sym']}", expanded=False):
+                        da1,da2,da3 = st.columns(3)
+
+                        def render_filtro(col_d, titulo, score, det, col_f):
+                            with col_d:
+                                st.markdown(f"""
+                                <div style="background:#08090f;border:1px solid {col_f};
+                                            border-radius:8px;padding:10px 12px;
+                                            font-family:'Share Tech Mono',monospace">
+                                    <div style="color:{col_f};font-size:0.82rem;
+                                                font-weight:700;margin-bottom:6px">
+                                        {titulo} — {score:.0f}/100
+                                    </div>
+                                    <div style="background:#0d1428;border-radius:3px;
+                                                height:8px;margin-bottom:8px;overflow:hidden">
+                                        <div style="width:{score}%;height:100%;
+                                                    background:{col_f};border-radius:3px"></div>
+                                    </div>""", unsafe_allow_html=True)
+                                for k,v in det.items():
+                                    ic_col="#00ff88" if "🟢" in v else("#ffaa00" if "🟡" in v else "#ff3355")
+                                    st.markdown(f"""
+                                    <div style="font-size:0.72rem;margin:3px 0;
+                                                display:flex;justify-content:space-between">
+                                        <span style="color:#4a6080">{k}</span>
+                                        <span style="color:{ic_col}">{v}</span>
+                                    </div>""", unsafe_allow_html=True)
+                                st.markdown("</div>", unsafe_allow_html=True)
+
+                        render_filtro(da1,"F1 TENDENCIA",top1_ap["f1_pct"],
+                                     top1_ap["f1_det"],"#1D9E75")
+                        render_filtro(da2,"F2 IMPULSO",  top1_ap["f2_pct"],
+                                     top1_ap["f2_det"],"#7F77DD")
+                        render_filtro(da3,"F3 ENTRADA",  top1_ap["f3_pct"],
+                                     top1_ap["f3_det"],"#BA7517")
+
+                #  TABLA COMPLETA 
+                if grupo_ap:
+                    filas_ap = []
+                    for r in grupo_ap:
+                        filas_ap.append({
+                            "Par":      r["sym"]+"/USDT",
+                            "APEX":     r["apex_score"],
+                            "Acción":   r["accion"],
+                            "F1%":      r["f1_pct"],
+                            "F2%":      r["f2_pct"],
+                            "F3%":      r["f3_pct"],
+                            "Entry":    r["precio_fmt"],
+                            "SL":       fp(r["sl"]),
+                            "TP1":      fp(r["tp1"]),
+                            "TP3":      fp(r["tp3"]),
+                            "R/R":      r["rr1"],
+                            "ATR%":     r["atr_pct"],
+                            "RSI":      r["rsi"],
+                            "ADX":      r["adx"],
+                            "🕯":       r["cascada"],
+                            "MACD✅":  "✅" if r["cruce_macd"] else "—",
+                            "E21✅":   "✅" if r["cruce_e21"]  else "—",
+                            "Salidas":  len(r["salidas"]),
+                        })
+                    st.dataframe(pd.DataFrame(filas_ap),
+                                use_container_width=True, hide_index=True,
+                                column_config={
+                                    "APEX": st.column_config.ProgressColumn(
+                                        "APEX",min_value=0,max_value=100,format="%d"),
+                                    "F1%":  st.column_config.ProgressColumn(
+                                        "F1%", min_value=0,max_value=100,format="%d"),
+                                    "F2%":  st.column_config.ProgressColumn(
+                                        "F2%", min_value=0,max_value=100,format="%d"),
+                                    "F3%":  st.column_config.ProgressColumn(
+                                        "F3%", min_value=0,max_value=100,format="%d"),
+                                    "R/R":  st.column_config.NumberColumn("R/R",format="%.1f"),
+                                    "🕯":   st.column_config.NumberColumn("🕯",format="%d"),
+                                    "Salidas":st.column_config.NumberColumn("⚠️Salidas",format="%d"),
+                                })
+
+        #  NOTA DE RIESGO 
+        st.markdown("""
+        <div style="background:#0d1428;border-left:3px solid #ffaa00;
+                    border-radius:6px;padding:12px 16px;margin-top:12px;
+                    font-family:'Share Tech Mono',monospace;font-size:0.77rem;color:#ffaa00">
+            <b>⚠️ GESTIÓN DE RIESGO APEX:</b><br>
+            · Solo entrar cuando <b>los 3 filtros pasan (F1+F2+F3 ≥ 55%)</b><br>
+            · Tamaño máximo: 3-5% de capital por operación<br>
+            · Respetar SL siempre — nunca moverlo en contra<br>
+            · Al llegar a TP1 → mover SL a breakeven, dejar correr al TP2/TP3<br>
+            · Score APEX ≥ 80 + R/R ≥ 2x = condiciones óptimas para tamaño completo<br>
+            · Añadir al monitor Live para seguimiento automático
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ==============================================================
+
+
+# ==============================================================
+#  SISTEMA DE SEGUIMIENTO PERSISTENTE  Supabase + Live Panel
+#    - Persiste entre sesiones (Supabase)
+#    - Integrado en el panel Live sin recargas
+#    - Solo la cripto seleccionada
+#    - Alertas: FUERTE  PERDIENDO  BAJISTA
+# ==============================================================
+
+#  SQL para crear tabla en Supabase 
+# CREATE TABLE IF NOT EXISTS ailino_posicion_activa (
+#   id SERIAL PRIMARY KEY,
+#   sym TEXT, cid TEXT, entry NUMERIC, sl NUMERIC,
+#   tp1 NUMERIC, tp2 NUMERIC, tp3 NUMERIC,
+#   trail NUMERIC, trail_sl NUMERIC, max_precio NUMERIC,
+#   atr_pct NUMERIC, score INTEGER, tiempo TEXT,
+#   activa BOOLEAN DEFAULT TRUE,
+#   estado TEXT DEFAULT 'SEGUIMIENTO',
+#   created_at TIMESTAMPTZ DEFAULT NOW()
+# );
+
+def supa_guardar_posicion_activa(pos):
+    """Guarda/actualiza posición en Supabase."""
+    if not SUPA_OK:
+        # Sin Supabase: usar session_state como fallback
+        st.session_state["pos_activa_local"] = pos
+        return True
+    try:
+        # Desactivar posiciones anteriores del mismo smbolo
+        supa.table("ailino_posicion_activa")\
+            .update({"activa": False})\
+            .eq("sym", pos["sym"]).eq("activa", True).execute()
+        # Insertar nueva
+        supa.table("ailino_posicion_activa").insert({
+            "sym":        pos["sym"],
+            "cid":        pos["cid"],
+            "entry":      float(pos["entry"]),
+            "sl":         float(pos["sl"]),
+            "tp1":        float(pos["tp1"]),
+            "tp2":        float(pos["tp2"]),
+            "tp3":        float(pos["tp3"]),
+            "trail":      float(pos["trail"]),
+            "trail_sl":   float(pos["trail_sl"]),
+            "max_precio": float(pos["max_precio"]),
+            "atr_pct":    float(pos["atr_pct"]),
+            "score":      int(pos["score"]),
+            "tiempo":     pos["tiempo"],
+            "activa":     True,
+            "estado":     "SEGUIMIENTO",
+        }).execute()
+        return True
+    except Exception as e:
+        st.session_state["pos_activa_local"] = pos
+        return False
+
+def supa_cargar_posicion_activa():
+    """Carga la posición activa desde Supabase."""
+    if not SUPA_OK:
+        return st.session_state.get("pos_activa_local")
+    try:
+        res = supa.table("ailino_posicion_activa")\
+            .select("*").eq("activa", True)\
+            .order("created_at", desc=True).limit(1).execute()
+        if res.data:
+            return res.data[0]
+    except:
+        pass
+    return st.session_state.get("pos_activa_local")
+
+def supa_cerrar_posicion(sym, pnl_pct):
+    """Marca posición como cerrada."""
+    if not SUPA_OK:
+        st.session_state.pop("pos_activa_local", None)
+        return
+    try:
+        supa.table("ailino_posicion_activa")\
+            .update({"activa": False, "estado": f"CERRADA {pnl_pct:+.2f}%"})\
+            .eq("sym", sym).eq("activa", True).execute()
+    except:
+        pass
+    st.session_state.pop("pos_activa_local", None)
+
+def supa_actualizar_trail_sl(sym, trail_sl, max_precio, estado):
+    """Actualiza el trailing SL en tiempo real."""
+    if not SUPA_OK:
+        pos = st.session_state.get("pos_activa_local")
+        if pos:
+            pos["trail_sl"]   = trail_sl
+            pos["max_precio"] = max_precio
+            pos["estado"]     = estado
+            st.session_state["pos_activa_local"] = pos
+        return
+    try:
+        supa.table("ailino_posicion_activa")\
+            .update({"trail_sl": float(trail_sl),
+                     "max_precio": float(max_precio),
+                     "estado": estado})\
+            .eq("sym", sym).eq("activa", True).execute()
+    except:
+        pass
+
+
+# ==============================================================
+#  ATR FILTER  SOLO ALTO IMPACTO
+#  Elimina las "centaveras"  solo criptos con potencial real
+# ==============================================================
+@st.cache_data(ttl=28)
+def precio_tiempo_real(coin_id):
+    try:
+        r = requests.get(f"{CG}/simple/price", params={
+            "ids": coin_id, "vs_currencies": "usd",
+            "include_24hr_change": "true",
+            "include_1hr_change":  "true",
+        }, timeout=8)
+        if r.status_code == 200:
+            d = r.json().get(coin_id, {})
+            return {"precio": d.get("usd",0) or 0,
+                    "chg1h":  d.get("usd_1h_change",0) or 0,
+                    "chg24h": d.get("usd_24h_change",0) or 0}
+    except: pass
+    return None
+
+@st.cache_data(ttl=50)
+def ohlc_seguimiento(coin_id):
+    try:
+        r = requests.get(f"{CG}/coins/{coin_id}/ohlc",
+                        params={"vs_currency":"usd","days":2}, timeout=10)
+        if r.status_code==200 and r.json():
+            df = pd.DataFrame(r.json(), columns=["ts","Open","High","Low","Close"])
+            df["ts"] = pd.to_datetime(df["ts"],unit="ms",utc=True)
+            df.set_index("ts",inplace=True)
+            return df.astype(float)
+    except: pass
+    return None
+
+
+def calcular_estado_posicion(df_ohlc, precio_actual, pos):
+    """
+    Calcula el estado actual de la posición:
+    FUERTE / PERDIENDO / BAJISTA / SALIR
+    Con todos los indicadores necesarios.
+    """
+    if df_ohlc is None or len(df_ohlc) < 8:
+        return None
+    try:
+        c = df_ohlc["Close"].copy()
+        c.iloc[-1] = precio_actual
+        h = df_ohlc["High"]; l = df_ohlc["Low"]
+        n = len(c)
+
+        # EMAs
+        e9  = c.ewm(span=9,  adjust=False).mean()
+        e21 = c.ewm(span=21, adjust=False).mean()
+
+        # RSI
+        d  = c.diff()
+        g  = d.clip(lower=0).ewm(com=6,adjust=False).mean()
+        ls = (-d.clip(upper=0)).ewm(com=6,adjust=False).mean()
+        rsi= float((100-(100/(1+g/(ls+1e-10)))).iloc[-1])
+        if np.isnan(rsi): rsi=50.0
+
+        # MACD
+        mh_v = float((c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
+                     ).ewm(9,adjust=False).mean().diff().iloc[-1])
+        macd_hist = (c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
+                    ) - (c.ewm(12,adjust=False).mean()-c.ewm(26,adjust=False).mean()
+                    ).ewm(9,adjust=False).mean()
+        mh  = float(macd_hist.iloc[-1])  if not np.isnan(macd_hist.iloc[-1])  else 0
+        mhp = float(macd_hist.iloc[-2])  if not np.isnan(macd_hist.iloc[-2]) else mh
+
+        # Bollinger
+        bb_m= c.rolling(min(10,n)).mean()
+        bb_s= c.rolling(min(10,n)).std()
+        bb_p= float(((c-bb_m-2*bb_s)/(4*bb_s+1e-9)+1).iloc[-1])
+        if np.isnan(bb_p): bb_p=0.5
+
+        # ATR y ADX
+        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = float(tr.ewm(7,adjust=False).mean().iloc[-1])
+        dm_p= h.diff().clip(lower=0); dm_n=(-l.diff()).clip(lower=0)
+        dm_p= dm_p.where(dm_p>dm_n,0); dm_n=dm_n.where(dm_n>dm_p,0)
+        a7  = tr.ewm(7,adjust=False).mean()
+        dip = float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
+        dim = float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[-1])
+        dx  = abs(dip-dim)/(dip+dim+1e-10)*100
+        adx = float(pd.Series([dx]*n).ewm(7,adjust=False).mean().iloc[-1])
+        adx_s = (abs(dip-dim)/(dip+dim+1e-10)*100)
+        adx_full = adx_s if not isinstance(adx_s, float) else adx
+        try:
+            adx_p = float(pd.Series(
+                [(abs(float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) -
+                      float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i])) /
+                 (float((dm_p.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) +
+                  float((dm_n.ewm(7,adjust=False).mean()/(a7+1e-10)*100).iloc[i]) + 1e-10)*100)
+                 for i in range(n)]
+            ).ewm(7,adjust=False).mean().iloc[-2])
+        except: adx_p = adx
+
+        # Kalman velocidad
+        pk  = c.ewm(4,adjust=False).mean()
+        vel = float(pk.diff().iloc[-1])
+        velp= float(pk.diff().iloc[-2]) if n>2 else vel
+
+        # Pendientes EMA
+        p9  = (e9.iloc[-1]-e9.iloc[-4])/(e9.iloc[-4]+1e-10)*100  if n>4 else 0
+        p21 = (e21.iloc[-1]-e21.iloc[-4])/(e21.iloc[-4]+1e-10)*100 if n>4 else 0
+
+        e9v = float(e9.iloc[-1]); e21v=float(e21.iloc[-1])
+
+        #  FUERZA ALCISTA 0-100 
+        fuerza = 0
+        if p9>0:    fuerza += min(25, p9*60)
+        if p21>0:   fuerza += min(20, p21*90)
+        if adx>25:  fuerza += 25
+        elif adx>15:fuerza += 14
+        if dip>dim: fuerza += min(15,(dip-dim)*0.5)
+        if vel>0 and vel>velp: fuerza += 10
+        elif vel>0:            fuerza += 5
+        if rsi<65:  fuerza += 5
+        elif rsi>74:fuerza -= 15
+        if bb_p>0.85: fuerza -= 12
+        if mh<0 and mhp>=0: fuerza -= 20
+        fuerza = max(0, min(100, fuerza))
+
+        #  ESTADO PRINCIPAL 
+        señales = []
+        urgencia = 0
+
+        # Seales crticas de salida
+        if rsi > 75 and bb_p > 0.88:
+            señales.append("🚨 RSI sobrecomprado + precio en techo BB")
+            urgencia = 3
+        if e9v < e21v:
+            señales.append("🚨 EMA9 cruzó EMA21 hacia abajo")
+            urgencia = 3
+        if mh < 0 and mhp >= 0:
+            señales.append("🚨 MACD cruce bajista")
+            urgencia = 3
+
+        # Seales de alerta
+        if rsi > 70 and bb_p > 0.75:
+            señales.append("⚠️ RSI alto + BB extendido")
+            urgencia = max(urgencia, 2)
+        if adx < adx_p and adx < 20:
+            señales.append("⚠️ ADX cayendo — fuerza debilitándose")
+            urgencia = max(urgencia, 1)
+        if vel < 0 and vel < velp:
+            señales.append("⚠️ Kalman desacelerando")
+            urgencia = max(urgencia, 1)
+        if fuerza < 25:
+            señales.append("⚠️ Fuerza alcista por debajo del 25%")
+            urgencia = max(urgencia, 2)
+
+        # Estado semforo
+        if urgencia == 3 or fuerza < 20:
+            estado = "BAJISTA"; estado_col = "#ff3355"; estado_ico = "🔴"
+        elif urgencia == 2 or fuerza < 40:
+            estado = "PERDIENDO"; estado_col = "#ffaa00"; estado_ico = "⚠️"
+        else:
+            estado = "FUERTE"; estado_col = "#00ff88"; estado_ico = "✅"
+
+        # Trailing stop actualizado
+        entry     = float(pos.get("entry", precio_actual))
+        trail     = float(pos.get("trail", atr*1.5))
+        trail_sl_viejo = float(pos.get("trail_sl", pos.get("sl", entry*0.97)))
+        max_precio= max(float(pos.get("max_precio", entry)), precio_actual)
+        nuevo_trail_sl = precio_actual - trail
+        trail_sl  = max(trail_sl_viejo, nuevo_trail_sl)
+
+        # SL tocado
+        if precio_actual <= trail_sl:
+            señales.insert(0, "🚨 STOP LOSS TOCADO — SALIR INMEDIATAMENTE")
+            urgencia  = 3
+            estado    = "BAJISTA"
+            estado_col= "#ff0000"
+
+        return {
+            "rsi": round(rsi,1), "mh": round(mh,8),
+            "mhp": round(mhp,8), "bb_p": round(bb_p,3),
+            "adx": round(adx,1), "adx_p": round(adx_p,1),
+            "dip": round(dip,1), "dim": round(dim,1),
+            "vel": round(vel,6), "velp": round(velp,6),
+            "p9": round(p9,3), "p21": round(p21,3),
+            "e9": round(e9v,6), "e21": round(e21v,6),
+            "fuerza": round(fuerza,1),
+            "señales": señales, "urgencia": urgencia,
+            "estado": estado, "estado_col": estado_col, "estado_ico": estado_ico,
+            "trail_sl": trail_sl, "max_precio": max_precio,
+            "atr_actual": round(atr,8),
+        }
+    except Exception as e:
+        return None
+
+
+# ==============================================================
+#  UI  PANEL DE SEGUIMIENTO (dentro del Live, sin recargas)
+# ==============================================================
 st.sidebar.divider()
 
 # Cargar posicin activa desde Supabase al inicio
@@ -2157,704 +3389,6 @@ if pos_activa:
             pnl = 0
         supa_cerrar_posicion(sym_pos, pnl)
         st.rerun()
-
-
-# ============================================================
-# APEX v2 - MOTOR DE ENTRADA CUANTITATIVO AVANZADO
-#
-# MODELO DE 6 DIMENSIONES:
-# D1. Momentum Burst Score  - detecta el inicio del impulso
-# D2. Estructura Wyckoff    - confirma acumulacion previa
-# D3. Confluencia Tecnica   - RSI+MACD+BB+EMAs alineados
-# D4. Fuerza Relativa       - mas fuerte que BTC en el momento
-# D5. Kalman + ADX          - tendencia real filtrada sin ruido
-# D6. Volume Smart Money    - OBV + delta volume institucional
-#
-# PROBABILIDAD DE GANANCIA:
-# Calculada con modelo bayesiano simple basado en historico
-# de cada indicador. Solo entra cuando P(ganancia) > 72%.
-#
-# SIZING con Kelly Criterion:
-# f* = (p*b - q) / b
-# donde p=prob ganancia, b=R/R, q=1-p
-# ============================================================
-
-# Pares para APEX - alta liquidez, alta volatilidad
-APEX_PARES_V2 = [
-    ("BTCUSDT","BTC"),("ETHUSDT","ETH"),("SOLUSDT","SOL"),
-    ("AVAXUSDT","AVAX"),("NEARUSDT","NEAR"),("INJUSDT","INJ"),
-    ("APTUSDT","APT"),("ARBUSDT","ARB"),("OPUSDT","OP"),
-    ("SUIUSDT","SUI"),("FETUSDT","FET"),("LINKUSDT","LINK"),
-    ("UNIUSDT","UNI"),("AAVEUSDT","AAVE"),("XRPUSDT","XRP"),
-    ("DOGEUSDT","DOGE"),("MATICUSDT","MATIC"),("RUNEUSDT","RUNE"),
-    ("INJUSDT","INJ"),("ENAUSDT","ENA"),("WLDUSDT","WLD"),
-]
-_seen=set()
-APEX_PARES_V2=[(c,s) for c,s in APEX_PARES_V2 if not(s in _seen or _seen.add(s))]
-
-APEX_TF_V2 = {
-    "4H · 10 dias": ("4h",10),
-    "1D · 30 dias": ("1d",30),
-    "1D · 90 dias": ("1d",90),
-}
-
-@st.cache_data(ttl=120)
-def get_btc_ref():
-    """BTC como referencia para fuerza relativa."""
-    try:
-        df=binance_descargar("BTCUSDT","1d",30)
-        return df if df is not None and not df.empty else None
-    except: return None
-
-
-def apex_v2_analizar(df, sym, df_btc=None):
-    """
-    Motor APEX v2 - 6 dimensiones cuantitativas.
-    Retorna None si no cumple los criterios minimos.
-    """
-    if df is None or df.empty or len(df)<30:
-        return None
-    try:
-        c=df["Close"]; h=df["High"]; l=df["Low"]
-        v=df["Volume"]; o=df["Open"]; n=len(c)
-        precio=float(c.iloc[-1])
-        if precio<=0: return None
-
-        # ================================================
-        # INDICADORES BASE
-        # ================================================
-        # EMAs
-        e9  =c.ewm(span=9,  adjust=False).mean()
-        e21 =c.ewm(span=21, adjust=False).mean()
-        e50 =c.ewm(span=50, adjust=False).mean()
-        e200=c.ewm(span=200,adjust=False).mean()
-
-        # RSI con EWM (mas reactivo)
-        d=c.diff()
-        g=d.clip(lower=0).ewm(com=13,adjust=False).mean()
-        ls=(-d.clip(upper=0)).ewm(com=13,adjust=False).mean()
-        rsi=(100-(100/(1+g/(ls+1e-10))))
-        rsi_v=float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 50
-        rsi_p=float(rsi.iloc[-2]) if n>2 and not np.isnan(rsi.iloc[-2]) else rsi_v
-        rsi_p2=float(rsi.iloc[-3]) if n>3 and not np.isnan(rsi.iloc[-3]) else rsi_p
-
-        # MACD
-        ef=c.ewm(span=12,adjust=False).mean()
-        es2=c.ewm(span=26,adjust=False).mean()
-        macd_line=ef-es2
-        macd_sig=macd_line.ewm(span=9,adjust=False).mean()
-        mhist=macd_line-macd_sig
-        mh=float(mhist.iloc[-1]) if not np.isnan(mhist.iloc[-1]) else 0
-        mhp=float(mhist.iloc[-2]) if n>2 and not np.isnan(mhist.iloc[-2]) else mh
-        mhp2=float(mhist.iloc[-3]) if n>3 and not np.isnan(mhist.iloc[-3]) else mhp
-
-        # Bollinger
-        bm=c.rolling(20).mean(); bs=c.rolling(20).std()
-        bb_u=bm+2*bs; bb_l=bm-2*bs
-        bb_p=float(((c-bb_l)/(bb_u-bb_l+1e-9)).iloc[-1])
-        bb_p=max(0,min(1,bb_p)) if not np.isnan(bb_p) else 0.5
-        bb_width=float(((bb_u-bb_l)/bm).iloc[-1])  # anchura relativa
-
-        # ATR
-        tr=pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
-        atr=tr.ewm(span=14,adjust=False).mean()
-        atr_v=float(atr.iloc[-1]) if not np.isnan(atr.iloc[-1]) else precio*0.02
-        atr_pct=atr_v/precio*100
-
-        # ADX
-        dmp=h.diff().clip(lower=0); dmn=(-l.diff()).clip(lower=0)
-        dmp=dmp.where(dmp>dmn,0); dmn=dmn.where(dmn>dmp,0)
-        a14=tr.ewm(span=14,adjust=False).mean()
-        dip=float((dmp.ewm(span=14,adjust=False).mean()/(a14+1e-10)*100).iloc[-1])
-        dim=float((dmn.ewm(span=14,adjust=False).mean()/(a14+1e-10)*100).iloc[-1])
-        dx=abs(dip-dim)/(dip+dim+1e-10)*100
-        adx_s=pd.Series([dx]*n)
-        adx_v=float(adx_s.ewm(span=14,adjust=False).mean().iloc[-1])
-        adx_p=float(adx_s.ewm(span=14,adjust=False).mean().iloc[-2]) if n>2 else adx_v
-
-        # OBV
-        obv_d=np.where(c.diff()>0,v,np.where(c.diff()<0,-v,0))
-        obv=pd.Series(obv_d,index=c.index).cumsum()
-        obv_slope=(obv.iloc[-1]-obv.iloc[-5])/(abs(obv.iloc[-5])+1e-10)*100 if n>5 else 0
-
-        # Volume delta - velas alcistas vs bajistas
-        vol_alc=v[c>=o].mean() if (c>=o).any() else 0
-        vol_baj=v[c<o].mean()  if (c<o).any()  else 1
-        vol_delta=vol_alc/(vol_baj+1e-10)
-
-        # Volumen ratio
-        vol_sma=v.rolling(20).mean()
-        vol_r=float((v/(vol_sma+1e-10)).iloc[-1])
-
-        # Kalman velocidad y aceleracion
-        pk=c.ewm(span=5,adjust=False).mean()
-        vel=pk.diff(); acc=vel.diff()
-        vel_v=float(vel.iloc[-1]) if not np.isnan(vel.iloc[-1]) else 0
-        vel_p=float(vel.iloc[-2]) if n>2 and not np.isnan(vel.iloc[-2]) else vel_v
-        acc_v=float(acc.iloc[-1]) if not np.isnan(acc.iloc[-1]) else 0
-
-        # Pendientes EMA
-        p9 =(e9.iloc[-1] -e9.iloc[-5]) /(e9.iloc[-5]+1e-10)*100  if n>5 else 0
-        p21=(e21.iloc[-1]-e21.iloc[-5])/(e21.iloc[-5]+1e-10)*100 if n>5 else 0
-        p50=(e50.iloc[-1]-e50.iloc[-5])/(e50.iloc[-5]+1e-10)*100 if n>5 else 0
-        e9v=float(e9.iloc[-1]); e21v=float(e21.iloc[-1])
-        e50v=float(e50.iloc[-1]); e200v=float(e200.iloc[-1])
-
-        # Cascada velas verdes
-        cascada=0
-        for i in range(1,min(10,n)):
-            if c.iloc[-i]>o.iloc[-i]: cascada+=1
-            else: break
-
-        # Retornos
-        ret1 =(precio-float(c.iloc[-2]))/(float(c.iloc[-2])+1e-10)*100 if n>1 else 0
-        ret5 =(precio-float(c.iloc[-6]))/(float(c.iloc[-6])+1e-10)*100 if n>6 else 0
-        ret10=(precio-float(c.iloc[-11]))/(float(c.iloc[-11])+1e-10)*100 if n>11 else 0
-
-        # ================================================
-        # D1. MOMENTUM BURST SCORE (0-30)
-        # Detecta el INICIO del impulso, no el final
-        # ================================================
-        d1=0; d1_det={}
-
-        # Cruce MACD - la senal mas importante de inicio
-        if mhp<=0 and mh>0:
-            d1+=12; d1_det["MACD"]="CRUCE ALCISTA HOY"
-        elif mhp2<=0 and mhp>0 and mh>mhp:
-            d1+=9; d1_det["MACD"]="CRUCE AYER+ACELERANDO"
-        elif mh>0 and mh>mhp>mhp2:
-            d1+=6; d1_det["MACD"]="ACELERANDO"
-        elif mh>0: d1+=3; d1_det["MACD"]="Positivo"
-        else: d1_det["MACD"]="Negativo"
-
-        # Kalman acelerando
-        if vel_v>0 and acc_v>0 and vel_v>vel_p:
-            d1+=10; d1_det["Kalman"]="Vel+ Acel+ DOBLE"
-        elif vel_v>0 and vel_v>vel_p:
-            d1+=7; d1_det["Kalman"]="Acelerando"
-        elif vel_v>0: d1+=4; d1_det["Kalman"]="Positivo"
-        else: d1_det["Kalman"]="Negativo"
-
-        # RSI saliendo de sobreventa
-        if 28<=rsi_v<=50 and rsi_v>rsi_p>rsi_p2:
-            d1+=8; d1_det["RSI"]="Saliendo SV acelerando"
-        elif 28<=rsi_v<=55 and rsi_v>rsi_p:
-            d1+=5; d1_det["RSI"]="Saliendo SV"
-        elif rsi_v>72: d1-=5; d1_det["RSI"]="Sobrecomprado"
-        else: d1_det["RSI"]="Neutral"
-
-        d1=max(0,min(30,d1))
-
-        # ================================================
-        # D2. ESTRUCTURA WYCKOFF (0-20)
-        # Acumulacion previa = base solida para subida duradera
-        # ================================================
-        d2=0; d2_det={}
-
-        if n>=30:
-            # Rango de la base (penultimas 25 velas)
-            base_c=c.iloc[-30:-5].values
-            base_h=h.iloc[-30:-5].values
-            base_l=l.iloc[-30:-5].values
-            base_v=v.iloc[-30:-5].values
-
-            rango_base=(np.max(base_h)-np.min(base_l))/(np.mean(base_c)+1e-10)*100
-            rango_rec =(float(h.iloc[-3])-float(l.iloc[-3]))/(float(c.iloc[-3])+1e-10)*100
-
-            if rango_base<12:
-                d2+=8; d2_det["Base"]="Consolidacion estrecha"
-            elif rango_base<20:
-                d2+=5; d2_det["Base"]="Consolidacion moderada"
-            else: d2_det["Base"]="Sin base clara"
-
-            # Volumen decreciente en la base (acumulacion silenciosa)
-            v1h=np.mean(base_v[:len(base_v)//2])
-            v2h=np.mean(base_v[len(base_v)//2:])
-            if v2h<v1h*0.85:
-                d2+=6; d2_det["Vol.Base"]="Decreciente (smart money)"
-            elif v2h<v1h:
-                d2+=3; d2_det["Vol.Base"]="Leve decreciente"
-            else: d2_det["Vol.Base"]="Sin patron"
-
-            # Minimos crecientes - soporte firme
-            mins=base_l[-8:]
-            if all(mins[i]<=mins[i+1] for i in range(len(mins)-1)):
-                d2+=6; d2_det["Minimos"]="Crecientes (soporte firme)"
-            elif mins[-1]>mins[0]:
-                d2+=3; d2_det["Minimos"]="Generalmente crecientes"
-            else: d2_det["Minimos"]="Sin soporte claro"
-
-        d2=max(0,min(20,d2))
-
-        # ================================================
-        # D3. CONFLUENCIA TECNICA (0-20)
-        # RSI + BB + EMAs - todo debe confirmar
-        # ================================================
-        d3=0; d3_det={}
-
-        # RSI zona ideal
-        if 30<=rsi_v<=55:
-            d3+=6; d3_det["RSI"]="Zona optima entrada"
-        elif 55<rsi_v<=65:
-            d3+=3; d3_det["RSI"]="Zona alta aceptable"
-        elif rsi_v>72:
-            d3-=4; d3_det["RSI"]="Sobrecomprado -penalizacion"
-        else: d3_det["RSI"]="Fuera de zona"
-
-        # Bollinger posicion
-        if bb_p<0.15:
-            d3+=6; d3_det["BB"]="Bajo banda inferior"
-        elif bb_p<0.35:
-            d3+=4; d3_det["BB"]="Zona baja"
-        elif bb_p>0.85:
-            d3-=4; d3_det["BB"]="Sobre banda superior"
-        else: d3_det["BB"]="Centro"
-
-        # EMAs alineacion completa
-        if e9v>e21v>e50v and precio>e9v:
-            d3+=8; d3_det["EMAs"]="Alineacion perfecta + precio sobre E9"
-        elif e9v>e21v>e50v:
-            d3+=6; d3_det["EMAs"]="Alineacion perfecta"
-        elif e9v>e21v and precio>e21v:
-            d3+=3; d3_det["EMAs"]="E9>E21 + precio OK"
-        else: d3_det["EMAs"]="Desalineadas"
-
-        d3=max(0,min(20,d3))
-
-        # ================================================
-        # D4. FUERZA RELATIVA vs BTC (0-15)
-        # Si supera a BTC = capital rotando hacia ella
-        # ================================================
-        d4=0; d4_det={}
-
-        if df_btc is not None and not df_btc.empty and len(df_btc)>=10:
-            try:
-                ret_sym=(float(c.iloc[-1])-float(c.iloc[-10]))/(float(c.iloc[-10])+1e-10)*100
-                btc_c=df_btc["Close"]
-                ret_btc=(float(btc_c.iloc[-1])-float(btc_c.iloc[-10]))/(float(btc_c.iloc[-10])+1e-10)*100
-                rs=ret_sym-ret_btc
-                if rs>10:
-                    d4+=15; d4_det["FR"]=f"MUY FUERTE +{rs:.1f}% vs BTC"
-                elif rs>5:
-                    d4+=11; d4_det["FR"]=f"Fuerte +{rs:.1f}% vs BTC"
-                elif rs>2:
-                    d4+=7;  d4_det["FR"]=f"Mejor +{rs:.1f}% vs BTC"
-                elif rs>0:
-                    d4+=4;  d4_det["FR"]=f"Ligeramente +{rs:.1f}%"
-                elif rs>-5:
-                    d4+=2;  d4_det["FR"]=f"Igual {rs:.1f}%"
-                else:
-                    d4_det["FR"]=f"Debil {rs:.1f}% vs BTC"
-            except: d4=7; d4_det["FR"]="N/D"
-        else:
-            d4=7; d4_det["FR"]="Sin referencia BTC"
-
-        d4=max(0,min(15,d4))
-
-        # ================================================
-        # D5. KALMAN + ADX (0-10)
-        # Tendencia filtrada real
-        # ================================================
-        d5=0; d5_det={}
-
-        # ADX fuerza de tendencia
-        if adx_v>30 and dip>dim:
-            d5+=5; d5_det["ADX"]=f"{adx_v:.0f} Tendencia fuerte"
-        elif adx_v>20 and dip>dim:
-            d5+=3; d5_det["ADX"]=f"{adx_v:.0f} Tendencia moderada"
-        elif adx_v>15:
-            d5+=1; d5_det["ADX"]=f"{adx_v:.0f} Tendencia debil"
-        else: d5_det["ADX"]=f"{adx_v:.0f} Sin tendencia"
-
-        # Kalman consistencia (velas consecutivas velocidad positiva)
-        vels=[float(vel.iloc[-i]) for i in range(1,min(6,n)) if not np.isnan(vel.iloc[-i])]
-        consec_pos=sum(1 for vv in vels if vv>0)
-        if consec_pos>=4:
-            d5+=5; d5_det["Kalman"]=f"{consec_pos} velas velocidad positiva"
-        elif consec_pos>=2:
-            d5+=3; d5_det["Kalman"]=f"{consec_pos} velas positivas"
-        else: d5_det["Kalman"]="Kalman inconsistente"
-
-        d5=max(0,min(10,d5))
-
-        # ================================================
-        # D6. SMART MONEY VOLUME (0-5)
-        # OBV + delta volume institucional
-        # ================================================
-        d6=0; d6_det={}
-
-        if obv_slope>5:
-            d6+=3; d6_det["OBV"]="Acumulacion fuerte"
-        elif obv_slope>0:
-            d6+=1; d6_det["OBV"]="Acumulacion leve"
-        else: d6_det["OBV"]="Distribucion"
-
-        if vol_delta>1.5:
-            d6+=2; d6_det["VolDelta"]="Compradores dominan"
-        elif vol_delta>1.1:
-            d6+=1; d6_det["VolDelta"]="Leve dominio compra"
-        else: d6_det["VolDelta"]="Vendedores dominan"
-
-        d6=max(0,min(5,d6))
-
-        # ================================================
-        # SCORE APEX v2 (0-100)
-        # ================================================
-        score_raw=(d1/30*35 + d2/20*20 + d3/20*20 +
-                   d4/15*10 + d5/10*10 + d6/5*5)
-        apex_score=int(round(score_raw))
-
-        # Penalizaciones criticas
-        if rsi_v>75: apex_score=min(apex_score,48)  # sobrecomprado = no entrar
-        if mh<0:     apex_score=min(apex_score,52)  # MACD negativo = esperar
-        if ret10>35: apex_score=min(apex_score,45)  # ya subio demasiado
-
-        # Bonus de maxima confluencia
-        if d1>=22 and d2>=12 and d3>=14 and vol_r>1.8:
-            apex_score=min(100, apex_score+8)
-
-        apex_score=max(0,min(100,apex_score))
-
-        # ================================================
-        # PROBABILIDAD DE GANANCIA (modelo bayesiano)
-        # P(ganancia) basada en historico de cada indicador
-        # ================================================
-        p_components={}
-
-        # P(ganancia | MACD cruce alcista) = 0.68 historico
-        if mhp<=0 and mh>0: p_components["MACD"]=0.68
-        elif mh>0 and mh>mhp: p_components["MACD"]=0.62
-        elif mh>0: p_components["MACD"]=0.55
-        else: p_components["MACD"]=0.38
-
-        # P(ganancia | RSI zona) historico
-        if 30<=rsi_v<=45: p_components["RSI"]=0.71
-        elif 45<rsi_v<=60: p_components["RSI"]=0.58
-        elif rsi_v>70: p_components["RSI"]=0.35
-        else: p_components["RSI"]=0.50
-
-        # P(ganancia | EMAs alineadas)
-        if e9v>e21v>e50v: p_components["EMAs"]=0.67
-        elif e9v>e21v: p_components["EMAs"]=0.58
-        else: p_components["EMAs"]=0.42
-
-        # P(ganancia | Kalman acelerando)
-        if vel_v>0 and acc_v>0: p_components["Kalman"]=0.70
-        elif vel_v>0: p_components["Kalman"]=0.60
-        else: p_components["Kalman"]=0.40
-
-        # P(ganancia | ADX fuerte + DI+)
-        if adx_v>25 and dip>dim: p_components["ADX"]=0.69
-        elif adx_v>15 and dip>dim: p_components["ADX"]=0.60
-        else: p_components["ADX"]=0.45
-
-        # P(ganancia | volumen confirma)
-        if vol_r>2 and vol_delta>1.3: p_components["Vol"]=0.72
-        elif vol_r>1.5: p_components["Vol"]=0.62
-        else: p_components["Vol"]=0.50
-
-        # Combinacion bayesiana (multiplicativa normalizada)
-        p_vals=list(p_components.values())
-        log_odds=sum(np.log(p/(1-p+1e-10)+1e-10) for p in p_vals)
-        p_combined=1/(1+np.exp(-log_odds/len(p_vals)))
-        prob_ganancia=round(float(p_combined)*100,1)
-
-        # ================================================
-        # KELLY CRITERION - tamano optimo de posicion
-        # f* = (p*b - q) / b
-        # ================================================
-        sl_dist =1.4*atr_v/precio
-        tp1_dist=2.5*atr_v/precio
-        b=tp1_dist/sl_dist  # R/R real
-        p=p_combined
-        q=1-p
-        kelly_f=max(0,(p*b-q)/b)
-        kelly_pct=round(kelly_f*100,1)
-        # Usar 25% del Kelly completo (conservador)
-        kelly_rec=round(kelly_pct*0.25,1)
-
-        # ================================================
-        # NIVELES DE ENTRADA
-        # ================================================
-        sl  =precio - 1.4*atr_v
-        tp1 =precio + 2.5*atr_v   # 1er objetivo
-        tp2 =precio + 4.5*atr_v   # 2do objetivo
-        tp3 =precio + 7.0*atr_v   # objetivo maximizador
-        trail=1.4*atr_v
-        rr1 =(tp1-precio)/(precio-sl+1e-10)
-        rr2 =(tp2-precio)/(precio-sl+1e-10)
-
-        # ================================================
-        # CLASIFICACION FINAL
-        # ================================================
-        todos_ok=(d1>=18 and d2>=8 and d3>=12)
-
-        if apex_score>=82 and todos_ok and prob_ganancia>=72:
-            clasif="ENTRADA MAXIMA"; ccol="#00ff88"; cicon="MAX"
-        elif apex_score>=70 and todos_ok and prob_ganancia>=65:
-            clasif="ENTRADA FUERTE"; ccol="#44ffaa"; cicon="OK"
-        elif apex_score>=58 and prob_ganancia>=58:
-            clasif="ENTRADA POSIBLE"; ccol="#ffaa00"; cicon="~"
-        elif apex_score>=45:
-            clasif="VIGILAR"; ccol="#4488ff"; cicon="..."
-        else:
-            return None  # No cumple minimo
-
-        pfmt=(f"${precio:,.6f}" if precio<1 else
-              f"${precio:,.4f}" if precio<10 else
-              f"${precio:,.2f}")
-
-        return {
-            "sym":sym,"precio":precio,"pfmt":pfmt,
-            "apex_score":apex_score,"clasif":clasif,"ccol":ccol,"cicon":cicon,
-            "prob_ganancia":prob_ganancia,
-            "kelly_rec":kelly_rec,"kelly_pct":kelly_pct,
-            # Dimensiones
-            "d1":d1,"d2":d2,"d3":d3,"d4":d4,"d5":d5,"d6":d6,
-            "d1_det":d1_det,"d2_det":d2_det,"d3_det":d3_det,
-            "d4_det":d4_det,"d5_det":d5_det,"d6_det":d6_det,
-            # Indicadores
-            "rsi":round(rsi_v,1),"adx":round(adx_v,1),
-            "bb_p":round(bb_p,3),"vol_ratio":round(vol_r,2),
-            "atr_pct":round(atr_pct,2),"atr_abs":atr_v,
-            "cascada":cascada,"ret5":round(ret5,2),"ret10":round(ret10,2),
-            "cruce_macd":(mhp<=0 and mh>0),"vel_v":vel_v,"acc_v":acc_v,
-            "dip":round(dip,1),"dim":round(dim,1),
-            "obv_slope":round(obv_slope,2),"vol_delta":round(vol_delta,2),
-            # Niveles
-            "sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,"trail":trail,
-            "rr1":round(rr1,2),"rr2":round(rr2,2),
-            "p_components":p_components,
-            "todos_ok":todos_ok,
-            "impacto":round(apex_score*atr_pct*rr1/100,2),
-        }
-    except Exception as e:
-        return None
-
-
-# ---- SIDEBAR APEX ----------------------------------------
-st.sidebar.divider()
-st.sidebar.markdown("**APEX v2 - Motor Cuantitativo**")
-with st.sidebar:
-    tf_apex_v2=st.selectbox("Timeframe APEX:",
-                            list(APEX_TF_V2.keys()),
-                            index=0, key="tf_apex_v2")
-    run_apex=st.button("EJECUTAR APEX v2",
-                       use_container_width=True,
-                       type="primary", key="btn_apex")
-
-if run_apex:
-    st.divider()
-    st.markdown("## APEX v2 - Entradas de Alta Probabilidad")
-    st.markdown("""
-    <div style="background:#001428;border:1px solid #4488ff;
-                border-radius:8px;padding:10px 16px;margin-bottom:10px;
-                font-family:'Share Tech Mono',monospace;font-size:0.78rem;color:#7aabff">
-        <b style="color:#4488ff">6 dimensiones cuantitativas:</b>
-        D1 Momentum Burst · D2 Wyckoff/Acumulacion · D3 Confluencia Tecnica ·
-        D4 Fuerza Relativa BTC · D5 Kalman+ADX · D6 Smart Money Volume<br>
-        <b style="color:#00ff88">Solo entradas con P(ganancia) > 58% + Score > 58</b>
-    </div>""", unsafe_allow_html=True)
-
-    iv_ap,d_ap=APEX_TF_V2[tf_apex_v2]
-
-    with st.spinner("Cargando referencia BTC..."):
-        df_btc_ref=get_btc_ref()
-
-    prog_ap=st.progress(0)
-    resultados_ap=[]
-    for i_ap,(sym_bn,sym_dp) in enumerate(APEX_PARES_V2):
-        prog_ap.progress((i_ap+1)/len(APEX_PARES_V2),
-                        text=f"Analizando {sym_dp}...")
-        try:
-            df_ap=binance_descargar(sym_bn,iv_ap,d_ap)
-            res_ap=apex_v2_analizar(df_ap,sym_dp,df_btc_ref)
-            if res_ap: resultados_ap.append(res_ap)
-        except: pass
-        time.sleep(0.05)
-    prog_ap.empty()
-
-    if not resultados_ap:
-        st.info("Sin entradas validas ahora. El mercado no tiene confluencia suficiente. Vuelve en 1-4 horas.")
-    else:
-        resultados_ap.sort(key=lambda x:x["impacto"],reverse=True)
-
-        maximas=[r for r in resultados_ap if "MAXIMA"  in r["clasif"]]
-        fuertes=[r for r in resultados_ap if "FUERTE"  in r["clasif"]]
-        posibles=[r for r in resultados_ap if "POSIBLE" in r["clasif"]]
-
-        st.caption(f"{len(resultados_ap)} con senal · "
-                  f"MAXIMA: {len(maximas)} · "
-                  f"FUERTE: {len(fuertes)} · "
-                  f"POSIBLE: {len(posibles)}")
-
-        # Grafico de probabilidad vs score
-        fig_ap=plt.figure(figsize=(14,5),facecolor=BG)
-        ax_a1=fig_ap.add_subplot(1,2,1); estilizar_ax(ax_a1)
-        ax_a2=fig_ap.add_subplot(1,2,2); estilizar_ax(ax_a2)
-
-        # Scatter: probabilidad vs score, tamano=impacto
-        for r in resultados_ap:
-            ax_a1.scatter(r["apex_score"],r["prob_ganancia"],
-                         s=r["impacto"]*5+30,
-                         color=r["ccol"],alpha=0.8,zorder=3)
-            ax_a1.annotate(r["sym"],(r["apex_score"],r["prob_ganancia"]),
-                          xytext=(3,3),textcoords="offset points",
-                          fontsize=6.5,color="#c0d8ff")
-        ax_a1.axhline(72,color="#00ff88",lw=1,ls="--",alpha=0.6,label="P>72%")
-        ax_a1.axhline(65,color="#ffaa00",lw=0.8,ls=":",alpha=0.5,label="P>65%")
-        ax_a1.axvline(70,color="#00ff88",lw=1,ls="--",alpha=0.5)
-        ax_a1.set_xlabel("Score APEX",color="#2a4060",fontsize=8)
-        ax_a1.set_ylabel("P(Ganancia) %",color="#2a4060",fontsize=8)
-        ax_a1.set_title("Probabilidad vs Score\n(tamano = impacto potencial)",color="#4488ff",fontsize=9)
-        ax_a1.legend(fontsize=7,framealpha=0.3)
-
-        # Barras: desglose 6 dimensiones del top 1
-        if resultados_ap:
-            r_top=resultados_ap[0]
-            dims=["D1 Momentum","D2 Wyckoff","D3 Confluencia","D4 FR-BTC","D5 Kalman+ADX","D6 SmartMoney"]
-            vals_d=[r_top["d1"],r_top["d2"],r_top["d3"],r_top["d4"],r_top["d5"],r_top["d6"]]
-            maxs_d=[30,20,20,15,10,5]
-            pcts_d=[v/m*100 for v,m in zip(vals_d,maxs_d)]
-            cols_d=["#00ff88" if p>=70 else("#ffaa00" if p>=45 else "#ff3355") for p in pcts_d]
-            brs_d=ax_a2.barh(dims,pcts_d,color=cols_d,alpha=0.85,height=0.6)
-            for bar_d,v,m in zip(brs_d,vals_d,maxs_d):
-                ax_a2.text(bar_d.get_width()+1,bar_d.get_y()+bar_d.get_height()/2,
-                          f"{v}/{m}",va="center",fontsize=7,color="white")
-            ax_a2.set_xlim(0,115)
-            ax_a2.set_title(f"6 Dimensiones - {r_top['sym']}\nScore:{r_top['apex_score']} P:{r_top['prob_ganancia']}%",
-                           color="#4488ff",fontsize=9)
-            ax_a2.tick_params(colors="#4a6060",labelsize=7.5)
-        plt.tight_layout(); render_fig(fig_ap)
-
-        # Cards por clasificacion
-        all_groups=[("ENTRADA MAXIMA",maximas,"#00ff88"),
-                    ("ENTRADA FUERTE",fuertes,"#44ffaa"),
-                    ("ENTRADA POSIBLE",posibles,"#ffaa00")]
-
-        for grp_name,grp_list,grp_col in all_groups:
-            if not grp_list: continue
-            st.markdown(f"""
-            <div style="background:#08090f;border-left:4px solid {grp_col};
-                        border-radius:6px;padding:8px 14px;margin:10px 0 5px 0;
-                        font-family:'Orbitron',monospace;font-size:0.88rem;color:{grp_col}">
-                {grp_name} — {len(grp_list)} pares
-            </div>""", unsafe_allow_html=True)
-
-            for row_i in range(0,min(6,len(grp_list)),3):
-                row_g=grp_list[row_i:row_i+3]
-                cols_g=st.columns(len(row_g))
-                for r,col_g in zip(row_g,cols_g):
-                    with col_g:
-                        prob_col=("#00ff88" if r["prob_ganancia"]>=70 else
-                                  "#ffaa00" if r["prob_ganancia"]>=60 else "#ff3355")
-                        kelly_col=("#00ff88" if r["kelly_rec"]>=3 else
-                                   "#ffaa00" if r["kelly_rec"]>=1.5 else "#4488ff")
-
-                        st.markdown(f"""
-                        <div style="background:#08090f;border:2px solid {r['ccol']};
-                                    border-radius:10px;padding:13px;
-                                    font-family:'Share Tech Mono',monospace">
-                            <div style="font-family:'Orbitron',monospace;
-                                        color:{r['ccol']};font-size:1rem;font-weight:700">
-                                {r['sym']}/USDT</div>
-                            <div style="font-size:0.68rem;color:#4488ff;margin:1px 0">
-                                {r['clasif']}</div>
-                            <div style="font-size:1.2rem;font-weight:700;
-                                        color:#c0d8ff;margin:3px 0">{r['pfmt']}</div>
-
-                            <!-- Score y probabilidad -->
-                            <div style="display:grid;grid-template-columns:1fr 1fr;
-                                        gap:6px;margin:8px 0">
-                                <div style="background:#0d1428;border-radius:6px;
-                                            padding:6px;text-align:center">
-                                    <div style="color:#2a4060;font-size:0.6rem">APEX SCORE</div>
-                                    <div style="color:{r['ccol']};font-size:1.3rem;
-                                                font-weight:700">{r['apex_score']}</div>
-                                </div>
-                                <div style="background:#0d1428;border-radius:6px;
-                                            padding:6px;text-align:center">
-                                    <div style="color:#2a4060;font-size:0.6rem">P(GANANCIA)</div>
-                                    <div style="color:{prob_col};font-size:1.3rem;
-                                                font-weight:700">{r['prob_ganancia']}%</div>
-                                </div>
-                            </div>
-
-                            <!-- Kelly sizing -->
-                            <div style="background:#001428;border:1px solid #1a2a4a;
-                                        border-radius:6px;padding:6px;margin-bottom:8px;
-                                        font-size:0.72rem">
-                                <span style="color:#2a4060">Kelly recomendado: </span>
-                                <span style="color:{kelly_col};font-weight:700">
-                                    {r['kelly_rec']}% del capital</span>
-                                <span style="color:#2a4060;font-size:0.65rem">
-                                    (Kelly={r['kelly_pct']}% * 25%)</span>
-                            </div>
-
-                            <!-- 6 dimensiones mini barras -->
-                            <div style="font-size:0.65rem;color:#2a4060;margin-bottom:3px">
-                                6 DIMENSIONES</div>
-                            {"".join([f'<div style="display:flex;align-items:center;gap:4px;margin:2px 0"><span style="color:#4a6060;font-size:0.62rem;width:60px">{nm}</span><div style="flex:1;background:#0d1428;border-radius:2px;height:6px"><div style="width:{pct:.0f}%;height:100%;background:{"#00ff88" if pct>=70 else "#ffaa00" if pct>=45 else "#ff3355"};border-radius:2px"></div></div><span style="color:#4a6060;font-size:0.62rem">{sc}/{mx}</span></div>' for nm,sc,mx,pct in [("D1 Burst",r["d1"],30,r["d1"]/30*100),("D2 Wyckoff",r["d2"],20,r["d2"]/20*100),("D3 Tecnico",r["d3"],20,r["d3"]/20*100),("D4 FR-BTC",r["d4"],15,r["d4"]/15*100),("D5 Kalman",r["d5"],10,r["d5"]/10*100),("D6 SmartM",r["d6"],5,r["d6"]/5*100)]])}
-
-                            <!-- Niveles -->
-                            <div style="border-top:1px solid #0d1a2e;padding-top:7px;
-                                        margin-top:7px;font-size:0.7rem">
-                                <div style="color:#ff3355">SL: {fp(r['sl'])}</div>
-                                <div style="color:#ffaa00">TP1: {fp(r['tp1'])} R/R {r['rr1']}x</div>
-                                <div style="color:#ffdd44">TP2: {fp(r['tp2'])} R/R {r['rr2']}x</div>
-                                <div style="color:#ffffff">TP3: {fp(r['tp3'])}</div>
-                                <div style="color:#4a6060;margin-top:3px">
-                                    ATR: {r['atr_pct']}% | Impacto: {r['impacto']}</div>
-                            </div>
-                        </div>""", unsafe_allow_html=True)
-
-                        # Boton agregar al seguimiento
-                        import uuid as _u3
-                        if st.button(f"Seguir {r['sym']}",
-                                    key=f"apx2_{r['sym']}_{str(_u3.uuid4())[:5]}"):
-                            monto_ag=0  # el usuario lo pone en el formulario
-                            nueva_ag={
-                                "sym":r["sym"],"cid":r["sym"].lower(),
-                                "entry":r["precio"],"sl":r["sl"],
-                                "tp1":r["tp1"],"tp2":r["tp2"],"tp3":r["tp3"],
-                                "trail":r["trail"],"trail_sl":r["sl"],
-                                "max_precio":r["precio"],"monto":monto_ag,
-                                "atr_pct":r["atr_pct"],"score":r["apex_score"],
-                                "activa":True,
-                            }
-                            if SUPA_OK:
-                                try:
-                                    supa.table("ailino_posicion_activa").update({"activa":False}).eq("sym",r["sym"]).eq("activa",True).execute()
-                                    supa.table("ailino_posicion_activa").insert({"sym":r["sym"],"cid":r["sym"].lower(),"entry":float(r["precio"]),"sl":float(r["sl"]),"tp1":float(r["tp1"]),"tp2":float(r["tp2"]),"tp3":float(r["tp3"]),"trail":float(r["trail"]),"trail_sl":float(r["sl"]),"max_precio":float(r["precio"]),"atr_pct":float(r["atr_pct"]),"score":int(r["apex_score"]),"monto":0,"tiempo":datetime.utcnow().isoformat(),"activa":True,"estado":"SEGUIMIENTO"}).execute()
-                                except: st.session_state["_track_pos"]=nueva_ag
-                            else:
-                                st.session_state["_track_pos"]=nueva_ag
-                            st.success(f"{r['sym']} en seguimiento - desplazate al fondo para agregar tu monto")
-
-        # Tabla completa
-        if resultados_ap:
-            with st.expander(f"Tabla completa - {len(resultados_ap)} resultados"):
-                filas_ap2=[{
-                    "Par":r["sym"]+"/USDT",
-                    "Score":r["apex_score"],
-                    "P(%)":r["prob_ganancia"],
-                    "Kelly%":r["kelly_rec"],
-                    "D1":r["d1"],"D2":r["d2"],"D3":r["d3"],
-                    "D4":r["d4"],"D5":r["d5"],"D6":r["d6"],
-                    "ATR%":r["atr_pct"],"R/R":r["rr1"],
-                    "Impacto":r["impacto"],
-                    "RSI":r["rsi"],"ADX":r["adx"],
-                    "Cascada":r["cascada"],
-                } for r in resultados_ap]
-                st.dataframe(pd.DataFrame(filas_ap2),
-                           use_container_width=True,hide_index=True,
-                           column_config={
-                               "Score":st.column_config.ProgressColumn("Score",min_value=0,max_value=100,format="%d"),
-                               "P(%)":st.column_config.ProgressColumn("P(%)",min_value=0,max_value=100,format="%.1f"),
-                               "Impacto":st.column_config.NumberColumn("Impacto",format="%.1f"),
-                               "R/R":st.column_config.NumberColumn("R/R",format="%.1f"),
-                           })
-
 
 #  PANEL DE SEGUIMIENTO 
 if pos_activa and pos_activa.get("activa", True):
