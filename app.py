@@ -2348,3 +2348,772 @@ if run_live:
         # Limpiar cache de datos para forzar nuevos datos
         live_get_markets.clear()
         st.rerun()
+
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║   AI.LINO APEX — SISTEMA DE ENTRADA DE ALTA PRECISIÓN      ║
+# ║   Alto riesgo · Alto rendimiento · 3 filtros en cascada    ║
+# ║   Trailing dinámico · Señal de salida automática           ║
+# ╚══════════════════════════════════════════════════════════════╝
+#
+#  FILOSOFÍA:
+#  No entrar hasta que los 3 filtros pasen simultáneamente.
+#  Una vez dentro, el sistema gestiona solo hasta la salida.
+#
+#  FILTRO 1 — TENDENCIA BASE    : EMA200 + ADX > 25
+#  FILTRO 2 — IMPULSO ACTIVO    : MACD cruce + Kalman acelerando + Vol 2x
+#  FILTRO 3 — ENTRADA PRECISA   : RSI 32-58 + BB bajo + Ruptura EMA21
+#
+#  SALIDA AUTOMÁTICA por cualquiera de estos:
+#  · Mecha agotada  : RSI > 74 + BB > 0.88 + ADX cae
+#  · Tendencia rota : EMA9 cruza EMA21 hacia abajo
+#  · SL dinámico    : precio toca trailing stop (ATR × 1.5)
+#  · Divergencia    : precio sube pero MACD y Kalman bajan (techo)
+
+# ── Supabase para guardar señales APEX ──────────────────────
+def supa_guardar_apex_signal(sym, tipo, precio, score, sl, tp1, tp2, detalles):
+    """Guarda señal APEX en Supabase para historial y seguimiento."""
+    if not SUPA_OK:
+        return
+    try:
+        supa.table("ailino_apex_signals").insert({
+            "symbol":    sym,
+            "tipo":      tipo,
+            "precio":    float(precio),
+            "score":     int(score),
+            "sl":        float(sl) if sl else 0,
+            "tp1":       float(tp1) if tp1 else 0,
+            "tp2":       float(tp2) if tp2 else 0,
+            "detalles":  str(detalles),
+            "timestamp": datetime.utcnow().isoformat(),
+        }).execute()
+    except:
+        pass
+
+# Inicializar historial APEX en session_state
+if "apex_historial" not in st.session_state:
+    st.session_state.apex_historial = []
+if "apex_posiciones" not in st.session_state:
+    st.session_state.apex_posiciones = {}  # sym → {entry, sl, tp1, tp2, trail}
+
+
+# ══════════════════════════════════════════════════════════════
+#  MOTOR APEX — análisis de alta precisión por par
+# ══════════════════════════════════════════════════════════════
+def apex_analizar(df, sym):
+    """
+    Los 3 filtros en cascada + señal de salida.
+    Retorna dict completo con todo lo necesario para operar.
+    """
+    if df is None or df.empty or len(df) < 30:
+        return None
+    try:
+        c = df["Close"]; h = df["High"]; l = df["Low"]; o = df["Open"]
+        v = df["Volume"]; n = len(c)
+
+        # ════════════════════════════════════════════════════
+        #  INDICADORES BASE
+        # ════════════════════════════════════════════════════
+        # EMAs
+        e9   = c.ewm(span=9,   adjust=False).mean()
+        e21  = c.ewm(span=21,  adjust=False).mean()
+        e50  = c.ewm(span=50,  adjust=False).mean()
+        e200 = c.ewm(span=200, adjust=False).mean()
+
+        # RSI con EWM (más reactivo)
+        d  = c.diff()
+        g  = d.clip(lower=0).ewm(com=13, adjust=False).mean()
+        ls = (-d.clip(upper=0)).ewm(com=13, adjust=False).mean()
+        rsi = 100 - (100/(1 + g/(ls+1e-10)))
+
+        # MACD
+        ef   = c.ewm(span=12, adjust=False).mean()
+        es   = c.ewm(span=26, adjust=False).mean()
+        macd = ef - es
+        msig = macd.ewm(span=9, adjust=False).mean()
+        mhist= macd - msig
+
+        # Bollinger
+        bb_m = c.rolling(20).mean()
+        bb_s = c.rolling(20).std()
+        bb_u = bb_m + 2*bb_s
+        bb_l = bb_m - 2*bb_s
+        bb_p = (c - bb_l)/(bb_u - bb_l + 1e-9)
+
+        # ATR
+        tr  = pd.concat([h-l,(h-c.shift()).abs(),(l-c.shift()).abs()],axis=1).max(axis=1)
+        atr = tr.ewm(span=14, adjust=False).mean()
+
+        # ADX + DI
+        dm_p = h.diff().clip(lower=0)
+        dm_n = (-l.diff()).clip(lower=0)
+        dm_p = dm_p.where(dm_p > dm_n, 0)
+        dm_n = dm_n.where(dm_n > dm_p, 0)
+        atr14= tr.ewm(span=14, adjust=False).mean()
+        dip  = (dm_p.ewm(span=14,adjust=False).mean()/(atr14+1e-10))*100
+        dim  = (dm_n.ewm(span=14,adjust=False).mean()/(atr14+1e-10))*100
+        dx   = ((dip-dim).abs()/(dip+dim+1e-10))*100
+        adx  = dx.ewm(span=14, adjust=False).mean()
+
+        # Kalman (velocidad y aceleración)
+        pk   = c.ewm(span=5,  adjust=False).mean()
+        vel  = pk.diff()
+        acc  = vel.diff()
+
+        # Stoch RSI
+        rsi_mn = rsi.rolling(14).min()
+        rsi_mx = rsi.rolling(14).max()
+        stoch  = (rsi - rsi_mn)/(rsi_mx - rsi_mn + 1e-9)*100
+        stoch_k= stoch.rolling(3).mean()
+
+        # Volumen
+        vol_sma  = v.rolling(20).mean()
+        vol_ratio= v/(vol_sma+1e-10)
+
+        # OBV (On Balance Volume)
+        obv_delta = np.where(c.diff()>0, v, np.where(c.diff()<0, -v, 0))
+        obv       = pd.Series(obv_delta, index=c.index).cumsum()
+        obv_trend = obv.diff(3)
+
+        # Valores actuales
+        cv  = c.iloc[-1];  c2  = c.iloc[-2]
+        e9v = e9.iloc[-1]; e21v= e21.iloc[-1]
+        e50v= e50.iloc[-1];e200v=e200.iloc[-1]
+        rsi_v   = float(rsi.iloc[-1])   if not np.isnan(rsi.iloc[-1])   else 50
+        rsi_p   = float(rsi.iloc[-2])   if not np.isnan(rsi.iloc[-2])   else 50
+        mh_v    = float(mhist.iloc[-1]) if not np.isnan(mhist.iloc[-1]) else 0
+        mh_p    = float(mhist.iloc[-2]) if not np.isnan(mhist.iloc[-2]) else 0
+        mh_p2   = float(mhist.iloc[-3]) if n>3 and not np.isnan(mhist.iloc[-3]) else mh_p
+        bb_v    = float(bb_p.iloc[-1])  if not np.isnan(bb_p.iloc[-1])  else 0.5
+        adx_v   = float(adx.iloc[-1])   if not np.isnan(adx.iloc[-1])   else 0
+        adx_p   = float(adx.iloc[-2])   if not np.isnan(adx.iloc[-2])   else 0
+        dip_v   = float(dip.iloc[-1])   if not np.isnan(dip.iloc[-1])   else 0
+        dim_v   = float(dim.iloc[-1])   if not np.isnan(dim.iloc[-1])   else 0
+        atr_v   = float(atr.iloc[-1])   if not np.isnan(atr.iloc[-1])   else cv*0.02
+        vel_v   = float(vel.iloc[-1])   if not np.isnan(vel.iloc[-1])   else 0
+        vel_p   = float(vel.iloc[-2])   if not np.isnan(vel.iloc[-2])   else 0
+        acc_v   = float(acc.iloc[-1])   if not np.isnan(acc.iloc[-1])   else 0
+        vr_v    = float(vol_ratio.iloc[-1]) if not np.isnan(vol_ratio.iloc[-1]) else 1
+        sk_v    = float(stoch_k.iloc[-1])   if not np.isnan(stoch_k.iloc[-1])   else 50
+        obv_t   = float(obv_trend.iloc[-1]) if not np.isnan(obv_trend.iloc[-1]) else 0
+
+        # Pendientes EMA
+        p9  = (e9.iloc[-1]  - e9.iloc[-4])  /(e9.iloc[-4]+1e-10)*100  if n>4 else 0
+        p21 = (e21.iloc[-1] - e21.iloc[-4]) /(e21.iloc[-4]+1e-10)*100 if n>4 else 0
+        p50 = (e50.iloc[-1] - e50.iloc[-4]) /(e50.iloc[-4]+1e-10)*100 if n>4 else 0
+
+        # Cascada velas verdes
+        cascada = 0
+        for i in range(1, min(10,n)):
+            if c.iloc[-i] > o.iloc[-i]: cascada+=1
+            else: break
+
+        atr_pct = atr_v/cv*100
+
+        # ════════════════════════════════════════════════════
+        #  FILTRO 1 — TENDENCIA BASE
+        #  Necesita: precio > EMA200 + EMAs alineadas + ADX fuerte
+        # ════════════════════════════════════════════════════
+        f1_score = 0
+        f1_det   = {}
+
+        # Precio sobre EMA200
+        sobre_e200 = cv > e200v
+        if sobre_e200:
+            gap200 = (cv-e200v)/(e200v+1e-10)*100
+            if gap200 > 5:   f1_score+=25; f1_det["EMA200"]="🟢 +{:.1f}% sobre".format(gap200)
+            elif gap200 > 1: f1_score+=18; f1_det["EMA200"]="🟡 +{:.1f}% sobre".format(gap200)
+            else:            f1_score+=10; f1_det["EMA200"]="🟡 Recién cruzó"
+        else:
+            f1_det["EMA200"]="🔴 Bajo EMA200"
+
+        # Alineación EMAs
+        if e9v > e21v > e50v > e200v:
+            f1_score+=25; f1_det["EMAs"]="🟢 Alineación perfecta ↑"
+        elif e9v > e21v > e50v:
+            f1_score+=18; f1_det["EMAs"]="🟡 EMA9>21>50 ↑"
+        elif e9v > e21v:
+            f1_score+=10; f1_det["EMAs"]="🟡 EMA9>21"
+        else:
+            f1_det["EMAs"]="🔴 Desalineadas"
+
+        # ADX tendencia fuerte
+        if adx_v > 35:   f1_score+=25; f1_det["ADX"]="🟢 {:.0f} MUY FUERTE".format(adx_v)
+        elif adx_v > 25: f1_score+=18; f1_det["ADX"]="🟡 {:.0f} Fuerte".format(adx_v)
+        elif adx_v > 18: f1_score+=8;  f1_det["ADX"]="🟡 {:.0f} Moderado".format(adx_v)
+        else:            f1_det["ADX"]="🔴 {:.0f} Débil".format(adx_v)
+
+        # DI+ vs DI-
+        if dip_v > dim_v + 5:  f1_score+=15; f1_det["DI"]="🟢 +DI {:.0f} domina".format(dip_v)
+        elif dip_v > dim_v:    f1_score+=8;  f1_det["DI"]="🟡 +DI leve"
+        else:                  f1_det["DI"]="🔴 -DI domina"
+
+        # Pendiente EMA50
+        if p50 > 0.3:   f1_score+=10; f1_det["Pendiente"]="🟢 EMA50 sube {:.3f}%".format(p50)
+        elif p50 > 0:   f1_score+=5;  f1_det["Pendiente"]="🟡 EMA50 plana"
+        else:           f1_det["Pendiente"]="🔴 EMA50 baja"
+
+        f1_max   = 100
+        f1_pct   = min(100, f1_score)
+        f1_pasa  = f1_pct >= 55
+
+        # ════════════════════════════════════════════════════
+        #  FILTRO 2 — IMPULSO ACTIVO
+        #  Necesita: MACD + Kalman + Volumen + OBV + Cascada
+        # ════════════════════════════════════════════════════
+        f2_score = 0
+        f2_det   = {}
+
+        # MACD cruce o aceleración
+        cruce_macd = mh_p<=0 and mh_v>0
+        acel_macd  = mh_v>0 and mh_v>mh_p>mh_p2
+        if cruce_macd:
+            f2_score+=30; f2_det["MACD"]="🟢 CRUCE ALCISTA ⚡"
+        elif acel_macd:
+            f2_score+=22; f2_det["MACD"]="🟢 Acelerando ↑↑"
+        elif mh_v > 0 and mh_v > mh_p:
+            f2_score+=14; f2_det["MACD"]="🟡 Positivo y creciendo"
+        elif mh_v > 0:
+            f2_score+=7;  f2_det["MACD"]="🟡 Positivo"
+        else:
+            f2_det["MACD"]="🔴 Negativo"
+
+        # Kalman velocidad y aceleración
+        if vel_v > 0 and acc_v > 0:
+            f2_score+=25; f2_det["Kalman"]="🟢 Vel+ · Acel+ ↑↑"
+        elif vel_v > 0 and vel_v > vel_p:
+            f2_score+=18; f2_det["Kalman"]="🟢 Acelerando ↑"
+        elif vel_v > 0:
+            f2_score+=10; f2_det["Kalman"]="🟡 Velocidad positiva"
+        else:
+            f2_det["Kalman"]="🔴 Decelerando"
+
+        # Volumen spike
+        if vr_v > 2.5:  f2_score+=25; f2_det["Volumen"]="🟢 SPIKE {:.1f}x ⚡".format(vr_v)
+        elif vr_v > 1.8: f2_score+=18; f2_det["Volumen"]="🟢 Alto {:.1f}x".format(vr_v)
+        elif vr_v > 1.3: f2_score+=10; f2_det["Volumen"]="🟡 Elevado {:.1f}x".format(vr_v)
+        elif vr_v > 0.8: f2_score+=4;  f2_det["Volumen"]="⚪ Normal {:.1f}x".format(vr_v)
+        else:            f2_det["Volumen"]="🔴 Seco {:.1f}x".format(vr_v)
+
+        # OBV acumulación
+        if obv_t > 0:   f2_score+=12; f2_det["OBV"]="🟢 Acumulación neta"
+        else:           f2_det["OBV"]="🔴 Distribución"
+
+        # Cascada velas
+        if cascada >= 4: f2_score+=8;  f2_det["Cascada"]="🟢 {} velas ↑".format(cascada)
+        elif cascada>=2: f2_score+=5;  f2_det["Cascada"]="🟡 {} velas ↑".format(cascada)
+        else:            f2_det["Cascada"]="⚪ {} velas".format(cascada)
+
+        f2_pct  = min(100, f2_score)
+        f2_pasa = f2_pct >= 55
+
+        # ════════════════════════════════════════════════════
+        #  FILTRO 3 — ENTRADA PRECISA
+        #  Necesita: RSI en zona correcta + BB bajo + EMA21
+        # ════════════════════════════════════════════════════
+        f3_score = 0
+        f3_det   = {}
+
+        # RSI zona ideal (saliendo de sobreventa, no sobrecomprado)
+        if 28 <= rsi_v <= 48 and rsi_v > rsi_p:
+            f3_score+=30; f3_det["RSI"]="🟢 {:.0f} — Saliendo sobreventa ↑".format(rsi_v)
+        elif 28 <= rsi_v <= 55:
+            f3_score+=20; f3_det["RSI"]="🟡 {:.0f} — Zona sana".format(rsi_v)
+        elif rsi_v < 28:
+            f3_score+=15; f3_det["RSI"]="🟡 {:.0f} — Sobreventa extrema".format(rsi_v)
+        elif rsi_v > 70:
+            f3_det["RSI"]="🔴 {:.0f} — Sobrecomprado".format(rsi_v)
+        else:
+            f3_score+=8; f3_det["RSI"]="⚪ {:.0f} — Zona alta".format(rsi_v)
+
+        # Posición en Bollinger
+        if bb_v < 0.15:
+            f3_score+=25; f3_det["BB"]="🟢 {:.2f} — Bajo banda inf".format(bb_v)
+        elif bb_v < 0.35:
+            f3_score+=18; f3_det["BB"]="🟢 {:.2f} — Zona baja".format(bb_v)
+        elif bb_v < 0.55:
+            f3_score+=10; f3_det["BB"]="🟡 {:.2f} — Centro".format(bb_v)
+        elif bb_v > 0.85:
+            f3_det["BB"]="🔴 {:.2f} — Sobre banda sup".format(bb_v)
+        else:
+            f3_score+=4; f3_det["BB"]="🟡 {:.2f} — Zona alta".format(bb_v)
+
+        # Ruptura EMA21 (precio acaba de cruzar desde abajo)
+        cruce_e21 = c2 <= e21.iloc[-2] and cv > e21v
+        sobre_e21 = cv > e21v
+        gap21     = (cv-e21v)/(e21v+1e-10)*100
+        if cruce_e21:
+            f3_score+=30; f3_det["EMA21"]="🟢 RUPTURA EMA21 ⚡"
+        elif sobre_e21 and gap21 < 2:
+            f3_score+=18; f3_det["EMA21"]="🟢 Recién sobre EMA21"
+        elif sobre_e21 and gap21 < 5:
+            f3_score+=10; f3_det["EMA21"]="🟡 Sobre EMA21 +{:.1f}%".format(gap21)
+        else:
+            f3_det["EMA21"]="🔴 Bajo EMA21"
+
+        # StochRSI zona entrada
+        if sk_v < 20 and sk_v > stoch_k.iloc[-2] if not np.isnan(stoch_k.iloc[-2]) else False:
+            f3_score+=15; f3_det["StochRSI"]="🟢 {:.0f} — Cruce alcista".format(sk_v)
+        elif sk_v < 30:
+            f3_score+=8;  f3_det["StochRSI"]="🟡 {:.0f} — Sobreventa".format(sk_v)
+        elif sk_v > 80:
+            f3_det["StochRSI"]="🔴 {:.0f} — Sobrecompra".format(sk_v)
+        else:
+            f3_score+=4; f3_det["StochRSI"]="⚪ {:.0f} — Neutral".format(sk_v)
+
+        f3_pct  = min(100, f3_score)
+        f3_pasa = f3_pct >= 55
+
+        # ════════════════════════════════════════════════════
+        #  SCORE APEX GLOBAL (0-100)
+        # ════════════════════════════════════════════════════
+        # Ponderación: F1×30% + F2×35% + F3×35%
+        apex_score = int(f1_pct*0.30 + f2_pct*0.35 + f3_pct*0.35)
+
+        # Bonus de confluencia máxima — todos los filtros fuertes
+        if f1_pct>=70 and f2_pct>=70 and f3_pct>=70:
+            apex_score = min(100, apex_score + 12)
+
+        # Penalización si algún filtro falla completamente
+        if not f1_pasa: apex_score = min(apex_score, 45)
+        if not f2_pasa: apex_score = min(apex_score, 50)
+        if not f3_pasa: apex_score = min(apex_score, 48)
+
+        todos_pasan = f1_pasa and f2_pasa and f3_pasa
+
+        # ════════════════════════════════════════════════════
+        #  NIVELES DE ENTRADA (ATR-based, alta precisión)
+        # ════════════════════════════════════════════════════
+        entry = cv
+        # SL dinámico: máximo entre EMA21-buffer y precio-1.5ATR
+        sl    = max(e21v * 0.992, cv - 1.5*atr_v)
+        # TPs progresivos para maximizar ganancia en tendencias fuertes
+        tp1   = cv + 2.0*atr_v    # objetivo conservador
+        tp2   = cv + 4.0*atr_v    # objetivo moderado
+        tp3   = cv + 7.0*atr_v    # objetivo agresivo (dejar correr)
+        trail = 1.5*atr_v          # trailing stop dinámico
+
+        rr1   = (tp1-entry)/(entry-sl+1e-10)
+        rr2   = (tp2-entry)/(entry-sl+1e-10)
+
+        # ════════════════════════════════════════════════════
+        #  SEÑALES DE SALIDA AUTOMÁTICA
+        # ════════════════════════════════════════════════════
+        salidas = []
+
+        # 1. Mecha agotada
+        if rsi_v > 74 and bb_v > 0.88 and adx_v < adx_p:
+            salidas.append(("🔴 MECHA AGOTADA",
+                           "RSI:{:.0f} · BB:{:.2f} · ADX cayendo".format(rsi_v,bb_v)))
+
+        # 2. Tendencia rota — cruce bajista EMA9/EMA21
+        if e9.iloc[-2] >= e21.iloc[-2] and e9v < e21v:
+            salidas.append(("🔴 TENDENCIA ROTA",
+                           "EMA9 cruzó EMA21 hacia abajo ↓"))
+
+        # 3. Divergencia bajista (precio sube pero indicadores bajan)
+        if len(c) > 5:
+            precio_sube = cv > c.iloc[-5]
+            macd_baja   = mhist.iloc[-1] < mhist.iloc[-5]
+            kalman_baja = vel_v < 0
+            if precio_sube and macd_baja and kalman_baja:
+                salidas.append(("⚠️ DIVERGENCIA BAJISTA",
+                               "Precio ↑ pero MACD+Kalman ↓ — posible techo"))
+
+        # 4. MACD cruce bajista
+        if mhist.iloc[-2] >= 0 and mhist.iloc[-1] < 0:
+            salidas.append(("🔴 MACD CRUCE BAJISTA",
+                           "Histograma cruzó a negativo"))
+
+        # ════════════════════════════════════════════════════
+        #  CLASIFICACIÓN FINAL
+        # ════════════════════════════════════════════════════
+        if todos_pasan and apex_score >= 80:
+            clasificacion = "🚀 ENTRADA ÓPTIMA"
+            col_apex      = "#00ff88"
+            accion        = "ENTRAR AHORA"
+        elif todos_pasan and apex_score >= 65:
+            clasificacion = "⚡ ENTRADA BUENA"
+            col_apex      = "#44ffaa"
+            accion        = "ENTRAR CON TAMAÑO REDUCIDO"
+        elif f1_pasa and f2_pasa and apex_score >= 50:
+            clasificacion = "👀 CASI LISTA"
+            col_apex      = "#ffaa00"
+            accion        = "ESPERAR F3"
+        elif f1_pasa and apex_score >= 35:
+            clasificacion = "⏳ EN FORMACIÓN"
+            col_apex      = "#4488ff"
+            accion        = "MONITOREAR"
+        else:
+            clasificacion = "❌ NO CUMPLE"
+            col_apex      = "#ff3355"
+            accion        = "NO ENTRAR"
+
+        pfmt = (f"${cv:,.6f}" if cv<1 else
+                f"${cv:,.4f}" if cv<10 else
+                f"${cv:,.2f}")
+
+        return {
+            "sym":          sym,
+            "precio":       cv,
+            "precio_fmt":   pfmt,
+            "apex_score":   apex_score,
+            "clasificacion":clasificacion,
+            "col_apex":     col_apex,
+            "accion":       accion,
+            "todos_pasan":  todos_pasan,
+            # Filtros
+            "f1_pct":f1_pct,"f1_pasa":f1_pasa,"f1_det":f1_det,
+            "f2_pct":f2_pct,"f2_pasa":f2_pasa,"f2_det":f2_det,
+            "f3_pct":f3_pct,"f3_pasa":f3_pasa,"f3_det":f3_det,
+            # Niveles
+            "entry":entry,"sl":sl,"tp1":tp1,"tp2":tp2,"tp3":tp3,
+            "trail":trail,"rr1":round(rr1,2),"rr2":round(rr2,2),
+            "atr_pct":round(atr_pct,2),
+            # Salidas
+            "salidas":salidas,
+            # Indicadores clave para display
+            "rsi":round(rsi_v,1),"adx":round(adx_v,1),
+            "dip":round(dip_v,1),"dim":round(dim_v,1),
+            "bb_pct":round(bb_v,3),"cascada":cascada,
+            "p9":round(p9,3),"p21":round(p21,3),
+            "vel_kalman":round(vel_v,5),"acc_kalman":round(acc_v,5),
+            "vol_ratio":round(vr_v,2),"cruce_macd":cruce_macd,
+            "cruce_e21":cruce_e21,
+        }
+    except Exception as e:
+        return None
+
+
+# ── Pares APEX — los más líquidos y con mayor potencial ─────
+APEX_PARES = [
+    ("bitcoin",            "BTC"),
+    ("ethereum",           "ETH"),
+    ("solana",             "SOL"),
+    ("avalanche-2",        "AVAX"),
+    ("near",               "NEAR"),
+    ("injective-protocol", "INJ"),
+    ("aptos",              "APT"),
+    ("arbitrum",           "ARB"),
+    ("optimism",           "OP"),
+    ("sui",                "SUI"),
+    ("fetch-ai",           "FET"),
+    ("chainlink",          "LINK"),
+    ("uniswap",            "UNI"),
+    ("aave",               "AAVE"),
+    ("ripple",             "XRP"),
+    ("dogecoin",           "DOGE"),
+    ("cardano",            "ADA"),
+    ("matic-network",      "MATIC"),
+    ("near",               "NEAR"),
+    ("pepe",               "PEPE"),
+    ("shiba-inu",          "SHIB"),
+]
+# Deduplicate
+seen = set()
+APEX_PARES = [(cid,sym) for cid,sym in APEX_PARES
+              if not (sym in seen or seen.add(sym))]
+
+APEX_DIAS_MAP = {
+    "4H · 10 días":  ("4h",  10),
+    "1D · 30 días":  ("1d",  30),
+    "1D · 90 días":  ("1d",  90),
+}
+
+
+# ══════════════════════════════════════════════════════════════
+#  UI — APEX
+# ══════════════════════════════════════════════════════════════
+st.sidebar.divider()
+st.sidebar.markdown("**🚀 AI.LINO APEX**")
+with st.sidebar:
+    tf_apex  = st.selectbox("⏱ TF Apex:",
+                            list(APEX_DIAS_MAP.keys()),
+                            index=1, key="tf_apex_sel")
+    run_apex = st.button("🚀 EJECUTAR APEX",
+                         use_container_width=True, key="btn_apex")
+
+if run_apex:
+    st.divider()
+    # Header APEX
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#001a0a,#0d1428);
+                border:1px solid #00ff88;border-radius:12px;
+                padding:16px 20px;margin-bottom:16px;
+                font-family:'Orbitron',monospace">
+        <div style="color:#00ff88;font-size:1.3rem;font-weight:700;
+                    letter-spacing:3px">🚀 AI.LINO APEX</div>
+        <div style="color:#4488ff;font-size:0.78rem;margin-top:4px">
+            SISTEMA DE ENTRADA DE ALTA PRECISIÓN · 3 FILTROS EN CASCADA
+        </div>
+        <div style="color:#2a4060;font-size:0.72rem;margin-top:4px">
+            F1: Tendencia Base · F2: Impulso Activo · F3: Entrada Precisa
+        </div>
+    </div>""", unsafe_allow_html=True)
+
+    iv_ap, d_ap = APEX_DIAS_MAP[tf_apex]
+
+    # ── Descarga y análisis ───────────────────────────────────
+    prog_ap = st.progress(0)
+    resultados_ap = []
+    total_ap = len(APEX_PARES)
+
+    for i_ap,(cid,sym) in enumerate(APEX_PARES):
+        prog_ap.progress((i_ap+1)/total_ap,
+                        text=f"🔬 Analizando {sym} — {i_ap+1}/{total_ap}")
+        try:
+            df_ap = binance_descargar(sym+"USDT", iv_ap, d_ap)
+            if df_ap is None or df_ap.empty:
+                df_ap = coingecko_descargar(cid, d_ap)
+            res_ap = apex_analizar(df_ap, sym)
+            if res_ap: resultados_ap.append(res_ap)
+        except:
+            pass
+        time.sleep(0.1)
+    prog_ap.empty()
+
+    if not resultados_ap:
+        st.error("No se pudieron analizar los pares. Verifica conexión.")
+    else:
+        resultados_ap.sort(key=lambda x: x["apex_score"], reverse=True)
+
+        optimas  = [r for r in resultados_ap if "ÓPTIMA" in r["clasificacion"]]
+        buenas   = [r for r in resultados_ap if "BUENA"  in r["clasificacion"]]
+        casi     = [r for r in resultados_ap if "CASI"   in r["clasificacion"]]
+        formando = [r for r in resultados_ap if "FORMACIÓN" in r["clasificacion"]
+                    or "MONITOR" in r.get("accion","")]
+
+        st.caption(f"🔬 {len(resultados_ap)} pares analizados · "
+                  f"🚀 {len(optimas)} óptimas · "
+                  f"⚡ {len(buenas)} buenas · "
+                  f"👀 {len(casi)} casi listas")
+
+        # ── GRÁFICO RADAR DE SCORES ───────────────────────────
+        top_vis = resultados_ap[:16]
+        fig_ap  = plt.figure(figsize=(14,5), facecolor=BG)
+        ax_ap   = fig_ap.add_subplot(1,1,1); estilizar_ax(ax_ap)
+        x_ap    = np.arange(len(top_vis))
+        w       = 0.28
+
+        f1s = [r["f1_pct"] for r in top_vis]
+        f2s = [r["f2_pct"] for r in top_vis]
+        f3s = [r["f3_pct"] for r in top_vis]
+
+        ax_ap.bar(x_ap-w,   f1s, w, color="#1D9E75", alpha=0.8, label="F1 Tendencia")
+        ax_ap.bar(x_ap,     f2s, w, color="#7F77DD", alpha=0.8, label="F2 Impulso")
+        ax_ap.bar(x_ap+w,   f3s, w, color="#BA7517", alpha=0.8, label="F3 Entrada")
+
+        # Score APEX como línea
+        ax_ap2 = ax_ap.twinx()
+        ax_ap2.plot(x_ap, [r["apex_score"] for r in top_vis],
+                   color="#00ff88", lw=2, marker="o", markersize=5,
+                   label="Score APEX")
+        ax_ap2.set_ylim(0,115); ax_ap2.set_ylabel("Score APEX",color="#00ff88",fontsize=8)
+        ax_ap2.tick_params(colors="#00ff88", labelsize=7)
+        ax_ap2.axhline(80, color="#00ff88", lw=0.8, ls="--", alpha=0.5)
+        ax_ap2.axhline(65, color="#ffaa00", lw=0.8, ls=":", alpha=0.5)
+
+        ax_ap.set_xticks(x_ap)
+        ax_ap.set_xticklabels([r["sym"] for r in top_vis],
+                              rotation=35, ha="right", fontsize=8, color="#4a6080")
+        ax_ap.set_ylim(0,115)
+        ax_ap.legend(fontsize=7, framealpha=0.3, loc="upper left")
+        ax_ap.set_title("APEX — Desglose de 3 Filtros por Par",
+                       color="#4488ff", fontsize=10)
+        ax_ap.axhline(55, color="#ffaa00", lw=0.6, ls=":", alpha=0.4)
+        plt.tight_layout(); render_fig(fig_ap)
+
+        # ── TABS ─────────────────────────────────────────────
+        tab_labels_ap = []
+        grupos_ap     = []
+        if optimas:  tab_labels_ap.append(f"🚀 Óptima ({len(optimas)})");  grupos_ap.append(optimas)
+        if buenas:   tab_labels_ap.append(f"⚡ Buena ({len(buenas)})");    grupos_ap.append(buenas)
+        if casi:     tab_labels_ap.append(f"👀 Casi ({len(casi)})");       grupos_ap.append(casi)
+        if formando: tab_labels_ap.append(f"⏳ Formación ({len(formando)})");grupos_ap.append(formando)
+        tab_labels_ap.append("📋 Todos")
+        grupos_ap.append(resultados_ap)
+
+        tabs_ap = st.tabs(tab_labels_ap)
+
+        for tab_obj_ap, grupo_ap in zip(tabs_ap, grupos_ap):
+            with tab_obj_ap:
+                # Cards top 3
+                top3_ap = grupo_ap[:3]
+                if top3_ap:
+                    cols_ap = st.columns(min(3, len(top3_ap)))
+                    for i_c, (r, col_c) in enumerate(zip(top3_ap, cols_ap)):
+                        with col_c:
+                            col = r["col_apex"]
+                            rr1c="#00ff88" if r["rr1"]>=2 else("#ffaa00" if r["rr1"]>=1.5 else "#ff3355")
+
+                            # Header de la card
+                            st.markdown(f"""
+                            <div style="border:2px solid {col};border-radius:10px;
+                                        background:#08090f;padding:12px 14px;
+                                        font-family:'Share Tech Mono',monospace">
+                                <div style="font-family:'Orbitron',monospace;
+                                            font-size:1rem;color:{col};font-weight:700">
+                                    {r['sym']}/USDT
+                                </div>
+                                <div style="font-size:0.68rem;color:#4488ff;margin:2px 0">
+                                    {r['clasificacion']}
+                                </div>
+                                <div style="font-size:1.5rem;font-weight:700;color:{col}">
+                                    {r['apex_score']}/100
+                                </div>
+                                <div style="font-size:0.85rem;color:#c0d8ff;margin:3px 0">
+                                    {r['precio_fmt']}
+                                </div>
+                            </div>""", unsafe_allow_html=True)
+
+                            # Barras de filtros
+                            for f_lbl,f_val,f_col in [
+                                ("F1 Tendencia",r["f1_pct"],"#1D9E75"),
+                                ("F2 Impulso",  r["f2_pct"],"#7F77DD"),
+                                ("F3 Entrada",  r["f3_pct"],"#BA7517"),
+                            ]:
+                                ic = "✅" if f_val>=55 else "❌"
+                                st.markdown(f"""
+                                <div style="margin:3px 0;font-family:'Share Tech Mono',monospace">
+                                    <div style="display:flex;justify-content:space-between;
+                                                font-size:0.7rem;color:#4a6060">
+                                        <span>{ic} {f_lbl}</span>
+                                        <span style="color:{f_col}">{f_val:.0f}/100</span>
+                                    </div>
+                                    <div style="background:#0d1428;border-radius:3px;height:7px;overflow:hidden">
+                                        <div style="width:{f_val}%;height:100%;
+                                                    background:{f_col};border-radius:3px"></div>
+                                    </div>
+                                </div>""", unsafe_allow_html=True)
+
+                            # Niveles
+                            st.markdown(f"""
+                            <div style="margin-top:8px;font-size:0.7rem;
+                                        border-top:1px solid #0d1a2e;padding-top:6px;
+                                        font-family:'Share Tech Mono',monospace">
+                                <div style="color:#00ff88">⚡ Entry: {r['precio_fmt']}</div>
+                                <div style="color:#ff3355">🛑 SL: {fp(r['sl'])}</div>
+                                <div style="color:#ffaa00">🎯 TP1: {fp(r['tp1'])} (R/R {r['rr1']}x)</div>
+                                <div style="color:#ffdd44">🎯 TP2: {fp(r['tp2'])} (R/R {r['rr2']}x)</div>
+                                <div style="color:#ffffff">🏆 TP3: {fp(r['tp3'])} (dejar correr)</div>
+                                <div style="color:#4a6080;margin-top:4px">
+                                    Trailing: {fp(r['trail'])} · ATR: {r['atr_pct']}%
+                                </div>
+                            </div>""", unsafe_allow_html=True)
+
+                            # Señales de salida activas
+                            if r["salidas"]:
+                                for sal_tipo, sal_desc in r["salidas"]:
+                                    st.error(f"{sal_tipo}: {sal_desc}")
+
+                            # Botón agregar al Live
+                            cid_btn = next((cid for cid,sym2 in APEX_PARES if sym2==r["sym"]),None)
+                            if cid_btn:
+                                if st.button(f"📡 Monitorear {r['sym']}", key=f"apex_live_{r['sym']}"):
+                                    wl = st.session_state.live_watchlist
+                                    if (cid_btn,r["sym"]) not in wl:
+                                        wl.append((cid_btn,r["sym"]))
+                                        st.session_state.live_watchlist = wl
+                                        supa_guardar_watchlist(wl)
+                                    # Guardar señal en Supabase
+                                    supa_guardar_apex_signal(
+                                        r["sym"],"ENTRADA",r["precio"],
+                                        r["apex_score"],r["sl"],r["tp1"],r["tp2"],
+                                        str(r["f1_det"])
+                                    )
+                                    st.success(f"✅ {r['sym']} agregado al monitor Live")
+
+                st.markdown("&nbsp;")
+
+                # ── DIAGNÓSTICO DETALLADO DEL #1 ─────────────
+                if grupo_ap:
+                    top1_ap = grupo_ap[0]
+                    with st.expander(f"🔬 Diagnóstico completo — {top1_ap['sym']}", expanded=False):
+                        da1,da2,da3 = st.columns(3)
+
+                        def render_filtro(col_d, titulo, score, det, col_f):
+                            with col_d:
+                                st.markdown(f"""
+                                <div style="background:#08090f;border:1px solid {col_f};
+                                            border-radius:8px;padding:10px 12px;
+                                            font-family:'Share Tech Mono',monospace">
+                                    <div style="color:{col_f};font-size:0.82rem;
+                                                font-weight:700;margin-bottom:6px">
+                                        {titulo} — {score:.0f}/100
+                                    </div>
+                                    <div style="background:#0d1428;border-radius:3px;
+                                                height:8px;margin-bottom:8px;overflow:hidden">
+                                        <div style="width:{score}%;height:100%;
+                                                    background:{col_f};border-radius:3px"></div>
+                                    </div>""", unsafe_allow_html=True)
+                                for k,v in det.items():
+                                    ic_col="#00ff88" if "🟢" in v else("#ffaa00" if "🟡" in v else "#ff3355")
+                                    st.markdown(f"""
+                                    <div style="font-size:0.72rem;margin:3px 0;
+                                                display:flex;justify-content:space-between">
+                                        <span style="color:#4a6080">{k}</span>
+                                        <span style="color:{ic_col}">{v}</span>
+                                    </div>""", unsafe_allow_html=True)
+                                st.markdown("</div>", unsafe_allow_html=True)
+
+                        render_filtro(da1,"F1 TENDENCIA",top1_ap["f1_pct"],
+                                     top1_ap["f1_det"],"#1D9E75")
+                        render_filtro(da2,"F2 IMPULSO",  top1_ap["f2_pct"],
+                                     top1_ap["f2_det"],"#7F77DD")
+                        render_filtro(da3,"F3 ENTRADA",  top1_ap["f3_pct"],
+                                     top1_ap["f3_det"],"#BA7517")
+
+                # ── TABLA COMPLETA ────────────────────────────
+                if grupo_ap:
+                    filas_ap = []
+                    for r in grupo_ap:
+                        filas_ap.append({
+                            "Par":      r["sym"]+"/USDT",
+                            "APEX":     r["apex_score"],
+                            "Acción":   r["accion"],
+                            "F1%":      r["f1_pct"],
+                            "F2%":      r["f2_pct"],
+                            "F3%":      r["f3_pct"],
+                            "Entry":    r["precio_fmt"],
+                            "SL":       fp(r["sl"]),
+                            "TP1":      fp(r["tp1"]),
+                            "TP3":      fp(r["tp3"]),
+                            "R/R":      r["rr1"],
+                            "ATR%":     r["atr_pct"],
+                            "RSI":      r["rsi"],
+                            "ADX":      r["adx"],
+                            "🕯":       r["cascada"],
+                            "MACD✅":  "✅" if r["cruce_macd"] else "—",
+                            "E21✅":   "✅" if r["cruce_e21"]  else "—",
+                            "Salidas":  len(r["salidas"]),
+                        })
+                    st.dataframe(pd.DataFrame(filas_ap),
+                                use_container_width=True, hide_index=True,
+                                column_config={
+                                    "APEX": st.column_config.ProgressColumn(
+                                        "APEX",min_value=0,max_value=100,format="%d"),
+                                    "F1%":  st.column_config.ProgressColumn(
+                                        "F1%", min_value=0,max_value=100,format="%d"),
+                                    "F2%":  st.column_config.ProgressColumn(
+                                        "F2%", min_value=0,max_value=100,format="%d"),
+                                    "F3%":  st.column_config.ProgressColumn(
+                                        "F3%", min_value=0,max_value=100,format="%d"),
+                                    "R/R":  st.column_config.NumberColumn("R/R",format="%.1f"),
+                                    "🕯":   st.column_config.NumberColumn("🕯",format="%d"),
+                                    "Salidas":st.column_config.NumberColumn("⚠️Salidas",format="%d"),
+                                })
+
+        # ── NOTA DE RIESGO ────────────────────────────────────
+        st.markdown("""
+        <div style="background:#0d1428;border-left:3px solid #ffaa00;
+                    border-radius:6px;padding:12px 16px;margin-top:12px;
+                    font-family:'Share Tech Mono',monospace;font-size:0.77rem;color:#ffaa00">
+            <b>⚠️ GESTIÓN DE RIESGO APEX:</b><br>
+            · Solo entrar cuando <b>los 3 filtros pasan (F1+F2+F3 ≥ 55%)</b><br>
+            · Tamaño máximo: 3-5% de capital por operación<br>
+            · Respetar SL siempre — nunca moverlo en contra<br>
+            · Al llegar a TP1 → mover SL a breakeven, dejar correr al TP2/TP3<br>
+            · Score APEX ≥ 80 + R/R ≥ 2x = condiciones óptimas para tamaño completo<br>
+            · Añadir al monitor Live para seguimiento automático
+        </div>
+        """, unsafe_allow_html=True)
