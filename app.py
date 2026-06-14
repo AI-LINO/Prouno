@@ -12,7 +12,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import LinearSegmentedColormap
-from hmmlearn import hmm
+try:
+    from hmmlearn import hmm
+    HMM_OK = True
+except Exception:
+    hmm = None
+    HMM_OK = False
 import requests
 from datetime import datetime, timedelta
 import time
@@ -309,6 +314,8 @@ def analisis_mtf(df_sup):
 #  HMM MEJORADO  5 features, mltiples semillas
 # ==============================================================
 def entrenar_hmm(df, ind):
+    if not HMM_OK:
+        raise ValueError("hmmlearn no disponible en Python 3.14")
     ret  = ind["ret_log"].dropna()
     vol  = ind["vol_ann"].dropna()
     mom  = ind["momentum"].dropna()
