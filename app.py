@@ -1203,48 +1203,128 @@ if ejecutar:
 # ============================================================
 
 TITAN_PARES = [
-    # BTC ecosystem
+    # ---- TOP CAPS (mayor liquidez) ----
     ("BTCUSDT","BTC","Crypto"),
     ("ETHUSDT","ETH","Crypto"),
-    # High beta - mayor movimiento diario
+    ("BNBUSDT","BNB","Crypto"),
+    ("XRPUSDT","XRP","Crypto"),
+    ("ADAUSDT","ADA","Crypto"),
+    ("LTCUSDT","LTC","Crypto"),
+    ("BCHUSDT","BCH","Crypto"),
+    ("XLMUSDT","XLM","Crypto"),
+    ("TRXUSDT","TRX","Crypto"),
+    ("EOSUSDT","EOS","Crypto"),
+
+    # ---- LAYER 1 (alta beta) ----
     ("SOLUSDT","SOL","L1"),
     ("AVAXUSDT","AVAX","L1"),
     ("NEARUSDT","NEAR","L1"),
     ("APTUSDT","APT","L1"),
     ("SUIUSDT","SUI","L1"),
-    ("INJUSDT","INJ","DeFi"),
-    # DeFi
+    ("ALGOUSDT","ALGO","L1"),
+    ("ATOMUSDT","ATOM","L1"),
+    ("DOTUSDT","DOT","L1"),
+    ("ICPUSDT","ICP","L1"),
+    ("FTMUSDT","FTM","L1"),
+    ("TONUSDT","TON","L1"),
+    ("SEIUSDT","SEI","L1"),
+    ("TIAUSDT","TIA","L1"),
+
+    # ---- LAYER 2 ----
+    ("ARBUSDT","ARB","L2"),
+    ("OPUSDT","OP","L2"),
+    ("MATICUSDT","MATIC","L2"),
+    ("IMXUSDT","IMX","L2"),
+    ("STRKUSDT","STRK","L2"),
+    ("MANTAUSDT","MANTA","L2"),
+    ("ZKUSDT","ZK","L2"),
+    ("SCROLLUSDT","SCR","L2"),
+
+    # ---- DeFi ----
     ("UNIUSDT","UNI","DeFi"),
     ("AAVEUSDT","AAVE","DeFi"),
+    ("INJUSDT","INJ","DeFi"),
     ("RUNEUSDT","RUNE","DeFi"),
-    # AI / DePIN
+    ("GMXUSDT","GMX","DeFi"),
+    ("JUPUSDT","JUP","DeFi"),
+    ("PENDLEUSDT","PENDLE","DeFi"),
+    ("CRVUSDT","CRV","DeFi"),
+    ("MKRUSDT","MKR","DeFi"),
+    ("COMPUSDT","COMP","DeFi"),
+    ("SNXUSDT","SNX","DeFi"),
+    ("LDOUSDT","LDO","DeFi"),
+
+    # ---- AI / DePIN ----
     ("FETUSDT","FET","AI"),
     ("RENDERUSDT","RNDR","AI"),
     ("WLDUSDT","WLD","AI"),
-    # Layer 2
-    ("ARBUSDT","ARB","L2"),
-    ("OPUSDT","OP","L2"),
-    # Meme / alto volumen
+    ("AGIXUSDT","AGIX","AI"),
+    ("OCEANUSDT","OCEAN","AI"),
+    ("TAOUSUSDT","TAO","AI"),
+    ("AKASHUSDT","AKT","AI"),
+    ("IOTAUSDT","IOTA","AI"),
+
+    # ---- Gaming / Metaverse ----
+    ("SANDUSDT","SAND","Gaming"),
+    ("MANAUSDT","MANA","Gaming"),
+    ("AXSUSDT","AXS","Gaming"),
+    ("GALAUSDT","GALA","Gaming"),
+    ("ENJUSDT","ENJ","Gaming"),
+    ("IMXUSDT","IMX","Gaming"),
+
+    # ---- Infraestructura / Oráculos ----
+    ("LINKUSDT","LINK","Infra"),
+    ("BANDUSDT","BAND","Infra"),
+    ("APIUSDT","API3","Infra"),
+    ("STXUSDT","STX","Infra"),
+    ("HBARUSDT","HBAR","Infra"),
+    ("VETUSDT","VET","Infra"),
+    ("QNTUSDT","QNT","Infra"),
+
+    # ---- Meme (alta volatilidad) ----
     ("DOGEUSDT","DOGE","Meme"),
+    ("SHIBUSDT","SHIB","Meme"),
     ("PEPEUSDT","PEPE","Meme"),
-    # Stables referencia
-    ("XRPUSDT","XRP","Crypto"),
-    ("ADAUSDT","ADA","Crypto"),
-    ("LINKUSDT","LINK","Crypto"),
-    ("DOTUSDT","DOT","Crypto"),
-    ("MATICUSDT","MATIC","L2"),
-    ("BNBUSDT","BNB","Crypto"),
-    ("LTCUSDT","LTC","Crypto"),
+    ("FLOKIUSDT","FLOKI","Meme"),
+    ("BONKUSDT","BONK","Meme"),
+    ("WIFUSDT","WIF","Meme"),
+    ("BOMEUSDT","BOME","Meme"),
+
+    # ---- Ecosistema BTC / Store of Value ----
+    ("TAOUSDT","TAO","BTC-Eco"),
+    ("STXUSDT","STX","BTC-Eco"),
+    ("RUNEUSDT","RUNE","BTC-Eco"),
+
+    # ---- Nuevas narrativas ----
+    ("ENAUSDT","ENA","Nueva"),
+    ("EIGENUSDT","EIGEN","Nueva"),
+    ("PYTHUSDT","PYTH","Nueva"),
+    ("WUSDT","W","Nueva"),
+    ("JUPUSDT","JUP","Nueva"),
+    ("DYMUSDT","DYM","Nueva"),
+    ("ALTUSDT","ALT","Nueva"),
+    ("PORTALUSDT","PORTAL","Nueva"),
+]
+
+# Eliminar duplicados manteniendo orden
+_seen_titan = set()
+TITAN_PARES = [
+    (bn,dp,sec) for bn,dp,sec in TITAN_PARES
+    if not (dp in _seen_titan or _seen_titan.add(dp))
+    and bn.replace("USDT","").isalpha()  # solo simbolos validos
 ]
 
 # Sectores para fuerza relativa (equivalente a ETFs)
 SECTORES_REF = {
-    "L1":    ["SOLUSDT","AVAXUSDT","NEARUSDT","APTUSDT","SUIUSDT"],
-    "DeFi":  ["UNIUSDT","AAVEUSDT","INJUSDT"],
-    "AI":    ["FETUSDT","RENDERUSDT","WLDUSDT"],
-    "L2":    ["ARBUSDT","OPUSDT","MATICUSDT"],
-    "Meme":  ["DOGEUSDT","PEPEUSDT"],
-    "Crypto":["BTCUSDT","ETHUSDT","XRPUSDT"],
+    "Crypto": ["BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","ADAUSDT"],
+    "L1":     ["SOLUSDT","AVAXUSDT","NEARUSDT","APTUSDT","SUIUSDT","TONUSDT","FTMUSDT"],
+    "L2":     ["ARBUSDT","OPUSDT","MATICUSDT","IMXUSDT","STRKUSDT"],
+    "DeFi":   ["UNIUSDT","AAVEUSDT","INJUSDT","RUNEUSDT","JUPUSDT"],
+    "AI":     ["FETUSDT","RENDERUSDT","WLDUSDT","AGIXUSDT","OCEANUSDT"],
+    "Gaming": ["SANDUSDT","MANAUSDT","AXSUSDT","GALAUSDT","ENJUSDT"],
+    "Infra":  ["LINKUSDT","HBARUSDT","VETUSDT","STXUSDT"],
+    "Meme":   ["DOGEUSDT","SHIBUSDT","PEPEUSDT","FLOKIUSDT","WIFUSDT"],
+    "Nueva":  ["ENAUSDT","EIGENUSDT","PYTHUSDT","DYMUSDT"],
 }
 
 
